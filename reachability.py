@@ -6,12 +6,17 @@ from valid Android entry points using Androguard's call graph.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import sys
 import re
+import time
 from datetime import datetime
 from collections import deque
+from urllib import request as urllib_request
+from urllib import parse as urllib_parse
+from urllib.error import URLError, HTTPError
 
 import networkx as nx
 
@@ -38,6 +43,194 @@ def debug(msg):
 def error_exit(msg):
     print(f"[ERROR] {msg}", file=sys.stderr)
     sys.exit(1)
+
+# ---------------------------------------------------------------------------
+# MobSF API integration
+#
+# Automates the full MobSF workflow: upload APK -> trigger scan -> poll for
+# completion -> download JSON report.  Requires a running MobSF instance.
+#
+# Uses only stdlib (urllib) so there is no dependency on 'requests'.
+# ---------------------------------------------------------------------------
+
+MOBSF_POLL_INTERVAL = 5     # seconds between scan-status checks
+MOBSF_POLL_TIMEOUT  = 300   # max seconds to wait for scan completion
+
+def _mobsf_api(url, api_key, endpoint, data=None, files=None):
+    """
+    Make a POST request to a MobSF REST API endpoint.
+    Returns the parsed JSON response.
+
+    - data:  dict of form fields (sent as application/x-www-form-urlencoded)
+    - files: dict of {field_name: (filename, file_bytes)} for multipart upload
+    """
+    full_url = url.rstrip("/") + endpoint
+
+    headers = {"Authorization": api_key}
+
+    if files:
+        # Build a multipart/form-data body manually (stdlib only)
+        boundary = "----ReachabilityAnalyzerBoundary"
+        body_parts = []
+
+        # Regular form fields
+        if data:
+            for key, val in data.items():
+                body_parts.append(
+                    f"--{boundary}\r\n"
+                    f"Content-Disposition: form-data; name=\"{key}\"\r\n\r\n"
+                    f"{val}\r\n"
+                )
+
+        # File fields
+        for field_name, (filename, file_bytes) in files.items():
+            body_parts.append(
+                f"--{boundary}\r\n"
+                f"Content-Disposition: form-data; name=\"{field_name}\"; filename=\"{filename}\"\r\n"
+                f"Content-Type: application/octet-stream\r\n\r\n"
+            )
+            body_parts.append(file_bytes)
+            body_parts.append(b"\r\n")
+
+        body_parts.append(f"--{boundary}--\r\n")
+
+        # Combine into bytes
+        body = b""
+        for part in body_parts:
+            if isinstance(part, str):
+                body += part.encode("utf-8")
+            else:
+                body += part
+
+        headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+
+    elif data:
+        body = urllib_parse.urlencode(data).encode("utf-8")
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+    else:
+        body = b""
+
+    req = urllib_request.Request(full_url, data=body, headers=headers, method="POST")
+
+    try:
+        with urllib_request.urlopen(req, timeout=60) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        error_body = e.read().decode("utf-8", errors="replace")
+        error_exit(f"MobSF API error {e.code} on {endpoint}: {error_body}")
+    except URLError as e:
+        error_exit(f"Cannot connect to MobSF at {full_url}: {e.reason}")
+
+
+def mobsf_upload(url, api_key, apk_path):
+    """Upload an APK to MobSF.  Returns the file hash."""
+    filename = os.path.basename(apk_path)
+    info(f"Uploading '{filename}' to MobSF at {url}...")
+
+    with open(apk_path, "rb") as f:
+        apk_bytes = f.read()
+
+    result = _mobsf_api(url, api_key, "/api/v1/upload",
+                        files={"file": (filename, apk_bytes)})
+
+    file_hash = result.get("hash", "")
+    if not file_hash:
+        error_exit(f"MobSF upload succeeded but no hash returned: {result}")
+
+    info(f"Upload complete. Hash: {file_hash}")
+    return file_hash
+
+
+def mobsf_scan(url, api_key, file_hash, apk_path):
+    """Trigger a static analysis scan on MobSF.  Returns when scan is initiated."""
+    filename = os.path.basename(apk_path)
+    info("Triggering MobSF static analysis scan...")
+
+    result = _mobsf_api(url, api_key, "/api/v1/scan",
+                        data={"hash": file_hash,
+                              "scan_type": "apk",
+                              "file_name": filename})
+
+    # MobSF v4 returns the full report JSON directly from /api/v1/scan
+    # when the scan completes synchronously (which it usually does).
+    if "code_analysis" in result or "android_api" in result:
+        info("Scan completed (synchronous response).")
+        return result
+
+    info("Scan initiated. Waiting for completion...")
+    return None
+
+
+def mobsf_poll_scan(url, api_key, file_hash):
+    """
+    Poll MobSF until the scan report is available.
+    MobSF v4's /api/v1/scan blocks until done, so this is a fallback
+    that fetches the report via /api/v1/report_json.
+    """
+    elapsed = 0
+    while elapsed < MOBSF_POLL_TIMEOUT:
+        time.sleep(MOBSF_POLL_INTERVAL)
+        elapsed += MOBSF_POLL_INTERVAL
+        info(f"  Polling scan status... ({elapsed}s elapsed)")
+
+        try:
+            result = _mobsf_api(url, api_key, "/api/v1/report_json",
+                                data={"hash": file_hash})
+            if result and ("code_analysis" in result or "android_api" in result):
+                info("Scan report is ready.")
+                return result
+        except SystemExit:
+            # report_json may 404 if scan isn't done yet — keep polling
+            if elapsed < MOBSF_POLL_TIMEOUT:
+                continue
+            raise
+
+    error_exit(f"MobSF scan did not complete within {MOBSF_POLL_TIMEOUT} seconds. "
+               "Check the MobSF web UI for status.")
+
+
+def mobsf_fetch_report(url, api_key, file_hash):
+    """Fetch the JSON report for an already-scanned APK."""
+    info("Fetching MobSF report...")
+    result = _mobsf_api(url, api_key, "/api/v1/report_json",
+                        data={"hash": file_hash})
+    if not result:
+        error_exit("MobSF returned an empty report.")
+    info("Report fetched successfully.")
+    return result
+
+
+def mobsf_auto_scan(url, api_key, apk_path, save_findings=None):
+    """
+    Full automated MobSF workflow:
+      1. Upload APK
+      2. Trigger scan
+      3. Poll / wait for completion
+      4. Download report JSON
+      5. Optionally save to disk
+
+    Returns the parsed JSON report dict.
+    """
+    # Step 1: Upload
+    file_hash = mobsf_upload(url, api_key, apk_path)
+
+    # Step 2: Scan (may return report directly for synchronous scans)
+    scan_result = mobsf_scan(url, api_key, file_hash, apk_path)
+
+    # Step 3: If scan didn't return the report, poll for it
+    if scan_result and ("code_analysis" in scan_result or "android_api" in scan_result):
+        report = scan_result
+    else:
+        report = mobsf_poll_scan(url, api_key, file_hash)
+
+    # Step 4: Optionally save to disk
+    if save_findings:
+        with open(save_findings, "w", encoding="utf-8") as f:
+            json.dump(report, f, indent=2, ensure_ascii=False)
+        info(f"MobSF report saved to {save_findings}")
+
+    return report
+
 
 # ---------------------------------------------------------------------------
 # Node normalisation helpers
@@ -354,7 +547,7 @@ def detect_source(findings_data):
     return None
 
 def parse_findings(filepath, source_hint=None):
-    """Load findings file and return a list of normalised finding dicts."""
+    """Load findings from a file path and return a list of normalised finding dicts."""
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -364,6 +557,11 @@ def parse_findings(filepath, source_hint=None):
     if not data:
         error_exit("Findings file is empty")
 
+    return parse_findings_from_data(data, source_hint)
+
+
+def parse_findings_from_data(data, source_hint=None):
+    """Parse findings from an already-loaded dict (used by both file and API paths)."""
     source = source_hint or detect_source(data)
     if source == "mobsf":
         return _parse_mobsf(data), source
@@ -880,7 +1078,9 @@ def main():
                     "vulnerabilities can be reached from valid Android entry points."
     )
     parser.add_argument("--apk", required=True, help="Path to the APK file")
-    parser.add_argument("--findings", required=True, help="Path to findings JSON (MobSF or Semgrep)")
+    parser.add_argument("--findings", default=None,
+                        help="Path to findings JSON (MobSF or Semgrep). "
+                             "Not required when using --mobsf-url to auto-scan.")
     parser.add_argument("--source", choices=["mobsf", "semgrep"], default=None,
                         help="Findings format (auto-detected if omitted)")
     parser.add_argument("--output", default="report.md", help="Output Markdown report path")
@@ -888,14 +1088,45 @@ def main():
                         help="Maximum BFS traversal depth (default: 15)")
     parser.add_argument("--debug", action="store_true",
                         help="Print detailed diagnostic output to stderr")
+
+    # MobSF auto-scan flags
+    parser.add_argument("--mobsf-url", default=None,
+                        help="MobSF server URL (e.g. http://localhost:8000). "
+                             "When provided, the tool uploads the APK, triggers a scan, "
+                             "and fetches the findings automatically.")
+    parser.add_argument("--mobsf-key", default=None,
+                        help="MobSF REST API key. Required when --mobsf-url is set.")
+    parser.add_argument("--save-findings", default=None,
+                        help="Save the auto-fetched MobSF report to this file path "
+                             "(useful for re-runs without re-scanning).")
+
     args = parser.parse_args()
 
     DEBUG = args.debug
 
     if not os.path.isfile(args.apk):
         error_exit(f"APK file not found: {args.apk}")
-    if not os.path.isfile(args.findings):
-        error_exit(f"Findings file not found: {args.findings}")
+
+    # Determine findings source: either from file or from MobSF auto-scan
+    use_mobsf_auto = args.mobsf_url is not None
+    findings_data = None
+
+    if use_mobsf_auto:
+        if not args.mobsf_key:
+            error_exit("--mobsf-key is required when using --mobsf-url")
+        # Auto-scan: upload, scan, fetch report from MobSF
+        findings_data = mobsf_auto_scan(
+            args.mobsf_url, args.mobsf_key, args.apk, args.save_findings
+        )
+        # Force source to mobsf since that's what we just fetched
+        args.source = "mobsf"
+    elif args.findings:
+        if not os.path.isfile(args.findings):
+            error_exit(f"Findings file not found: {args.findings}")
+    else:
+        error_exit("Either --findings or --mobsf-url is required. "
+                   "Provide a findings JSON file, or use --mobsf-url and --mobsf-key "
+                   "to auto-scan the APK with MobSF.")
 
     # Step 2 - Parse APK & build call graph
     apk, dalvik, analysis, cg = build_call_graph(args.apk)
@@ -924,7 +1155,12 @@ def main():
                 debug(f"  Provider: {prv}  -> dalvik: {_dalvik_class(prv)}")
 
     # Step 4 - Parse findings & match sinks
-    findings, source = parse_findings(args.findings, args.source)
+    if findings_data is not None:
+        # Auto-scanned from MobSF: data already in memory
+        findings, source = parse_findings_from_data(findings_data, args.source)
+    else:
+        # Loaded from file
+        findings, source = parse_findings(args.findings, args.source)
     info(f"Parsed {len(findings)} findings from {source}")
     findings = match_sinks(findings, cg, node_by_norm)
 

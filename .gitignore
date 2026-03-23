@@ -4,14 +4,19 @@ debug_log.txt
 # Claude Code project config
 .claude/
 
-# Generated reports (keep samples, ignore user-generated)
+# Session context (per-chat reference, not for repo)
+SESSION_CONTEXT.md
+
+# Generated reports (keep only report.md as sample reference)
 reportv1.md
 reportv2.md
 reportv2_real.md
 reportv2_sample.md
+report_auto.md
 
-# Real MobSF report (may contain sensitive data)
+# Real MobSF reports (may contain sensitive data)
 mobsf_real_report.json
+mobsf_auto_report.json
 
 # Python
 __pycache__/

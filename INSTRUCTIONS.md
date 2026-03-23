@@ -11,7 +11,12 @@ The Android Reachability Analyzer is a proof-of-concept static analysis tool tha
 [NetworkX](https://networkx.org/) is a Python library for the creation, manipulation, and study of complex graphs and networks. Once Androguard produces the call graph as a `networkx.DiGraph` (directed graph), this tool leverages NetworkX's graph traversal capabilities to perform bounded breadth-first search (BFS) from Android entry-point nodes to vulnerability sink nodes. NetworkX provides the algorithmic backbone that determines whether a given vulnerability is reachable within a configurable depth limit.
 
 ### MobSF (Mobile Security Framework)
-[MobSF](https://github.com/MobSF/Mobile-Security-Framework-MobSF) is an automated mobile application security testing framework. It performs static and dynamic analysis of Android and iOS applications, producing detailed JSON reports that catalog discovered vulnerabilities, insecure API usage, and code-level weaknesses. This tool consumes MobSF's JSON output as one of its two supported findings formats, parsing the `code_analysis` and `android_api` sections to extract class names, method names, and severity levels for each reported issue.
+[MobSF](https://github.com/MobSF/Mobile-Security-Framework-MobSF) is an automated mobile application security testing framework. It performs static and dynamic analysis of Android and iOS applications, producing detailed JSON reports that catalog discovered vulnerabilities, insecure API usage, and code-level weaknesses. This tool integrates with MobSF in two ways:
+
+1. **Auto-scan mode** (`--mobsf-url` + `--mobsf-key`): The tool communicates directly with a running MobSF instance via its REST API. It uploads the APK, triggers a static analysis scan, waits for completion, and fetches the JSON report — all automatically. This eliminates the need to manually export findings.
+2. **File mode** (`--findings`): The tool accepts a pre-exported MobSF JSON report (from the API or UI export). This is useful for offline analysis or when re-running against a previously scanned APK.
+
+In both modes, the tool parses the `code_analysis` and `android_api` sections to extract class names, method names, and severity levels for each reported issue.
 
 ### Semgrep (Not Yet Fully Implemented)
 [Semgrep](https://semgrep.dev/) is a lightweight static analysis engine that matches code patterns using declarative rules. When run against decompiled Android source code (e.g., output from JADX), Semgrep produces structured JSON results containing file paths, matched code lines, CWE identifiers, and OWASP mappings. This tool includes a preliminary parser for Semgrep's `--json` output, but **Semgrep integration has not been validated against a real Semgrep report**. The parser was built against the documented Semgrep JSON schema and a hand-crafted sample file, but may require adjustments once tested with actual Semgrep output (similar to the adjustments that were needed for the MobSF parser). Semgrep support should be considered experimental until that validation is complete.
@@ -21,13 +26,13 @@ The Android Reachability Analyzer is a proof-of-concept static analysis tool tha
 The analysis pipeline operates in a linear sequence:
 
 1. **Androguard** parses the APK and produces a directed call graph (via NetworkX) along with parsed manifest metadata.
-2. The **MobSF or Semgrep** findings file is parsed into a normalised list of vulnerability sinks, each mapped to a class and method name.
+2. The vulnerability findings are obtained either by **auto-scanning via the MobSF REST API** or by loading a pre-exported **MobSF or Semgrep** findings file. In either case, the findings are parsed into a normalised list of vulnerability sinks, each mapped to a class and method name.
 3. Each sink is matched against nodes in the call graph using a multi-tier matching strategy (exact signature, class+method, class-only, method-only).
 4. **NetworkX** performs bounded BFS traversal from each Android entry point (exported Activities, Services, Receivers, Providers) toward each matched sink node.
 5. The results are enriched with false-positive risk annotations derived from manifest properties (export status, permissions, intent filters) and call-chain characteristics (reflection usage, third-party library origin).
 6. A structured Markdown report is generated, triaging all findings into REACHABLE, NOT REACHABLE, and UNRESOLVED categories.
 
-The tool is implemented as a single Python CLI script (`reachability.py`) with no external framework dependencies beyond Androguard and NetworkX. All other functionality relies on the Python standard library.
+The tool is implemented as a single Python CLI script (`reachability.py`) with no external framework dependencies beyond Androguard and NetworkX. The MobSF API integration uses only Python's standard library (`urllib`), so no additional packages are required for auto-scan mode.
 
 ---
 
@@ -80,11 +85,35 @@ You need the actual `.apk` file. Common ways to obtain one:
 - **From a build:** Use the signed release APK from your `app/build/outputs/apk/` directory
 - **From APKMirror/APKPure:** Download the specific version you are testing
 
-### 2. Generate the Findings File
+### 2. Obtain the Findings
 
-You need a JSON findings file from **one** of these scanners:
+You have three options for providing vulnerability findings to the tool:
 
-#### Option A - MobSF
+#### Option A - MobSF Auto-Scan (Recommended)
+
+The tool can handle the entire MobSF workflow automatically. You only need a running MobSF instance and its API key.
+
+**Prerequisites:**
+- MobSF must be running and accessible (e.g. `http://localhost:8000`)
+- You need the REST API key (displayed on the MobSF home page, or found in MobSF settings)
+
+**Starting MobSF** (if not already running):
+```
+docker run -it --rm -p 8000:8000 opensecurity/mobile-security-framework-mobsf:latest
+```
+
+When you use `--mobsf-url` and `--mobsf-key`, the tool will:
+1. Upload the APK to MobSF via `/api/v1/upload`
+2. Trigger a static analysis scan via `/api/v1/scan`
+3. Wait for the scan to complete (MobSF v4 typically responds synchronously; if not, the tool polls every 5 seconds for up to 5 minutes)
+4. Fetch the full JSON report
+5. Feed it directly into the reachability analysis pipeline
+
+No manual export or intermediate files are needed. Optionally use `--save-findings` to save the fetched report to disk for future re-use.
+
+#### Option B - MobSF Pre-Exported Findings File
+
+If you prefer to export the MobSF report manually (or want to re-run against a previously saved report):
 
 1. Upload the APK to your MobSF instance (local or hosted)
 2. After the scan completes, export the JSON report:
@@ -96,7 +125,7 @@ You need a JSON findings file from **one** of these scanners:
 3. The JSON should contain `code_analysis` and/or `android_api` sections
 4. Pass the downloaded file as `--findings mobsf_findings.json --source mobsf`
 
-#### Option B - Semgrep (Experimental)
+#### Option C - Semgrep (Experimental)
 
 > **Note:** Semgrep support has not yet been validated against a real Semgrep JSON report. The parser was built from the documented schema and a hand-crafted sample file. If you test with a real Semgrep report and encounter parsing issues, please report them so the parser can be updated.
 
@@ -115,7 +144,17 @@ You need a JSON findings file from **one** of these scanners:
 
 ## Running the Tool
 
-### Basic Usage (auto-detects findings format)
+### MobSF Auto-Scan (recommended - one command does everything)
+```
+python reachability.py --apk target.apk --mobsf-url http://localhost:8000 --mobsf-key YOUR_API_KEY --output report.md
+```
+
+### MobSF Auto-Scan with saved report (for re-runs without re-scanning)
+```
+python reachability.py --apk target.apk --mobsf-url http://localhost:8000 --mobsf-key YOUR_API_KEY --save-findings mobsf_report.json --output report.md
+```
+
+### Pre-exported findings file (auto-detects format)
 ```
 python reachability.py --apk target.apk --findings mobsf_findings.json --output report.md
 ```
@@ -123,17 +162,20 @@ python reachability.py --apk target.apk --findings mobsf_findings.json --output 
 ### All Command-Line Options
 
 ```
-python reachability.py --apk target.apk --findings findings.json --source mobsf --output report.md --max-depth 15
+python reachability.py --apk target.apk --mobsf-url http://localhost:8000 --mobsf-key YOUR_API_KEY --output report.md --max-depth 15
 ```
 
 | Flag | Required | Default | Description |
 |---|---|---|---|
 | `--apk` | Yes | - | Path to the APK file |
-| `--findings` | Yes | - | Path to the MobSF or Semgrep JSON findings |
+| `--findings` | Conditional | - | Path to MobSF or Semgrep JSON findings. Not required when using `--mobsf-url`. |
 | `--source` | No | auto-detect | Force findings format: `mobsf` or `semgrep` |
 | `--output` | No | `report.md` | Output path for the Markdown report |
 | `--max-depth` | No | `15` | Max BFS traversal depth (hops) |
 | `--debug` | No | off | Print detailed diagnostic output to stderr |
+| `--mobsf-url` | No | - | MobSF server URL (e.g. `http://localhost:8000`). Enables auto-scan mode. |
+| `--mobsf-key` | Conditional | - | MobSF REST API key. Required when `--mobsf-url` is set. |
+| `--save-findings` | No | - | Save the auto-fetched MobSF report JSON to this file path for re-use. |
 
 ### Flag Descriptions
 
@@ -146,7 +188,7 @@ Example:
 --apk ./builds/com.example.banking-v2.3.1.apk
 ```
 
-#### `--findings` (required)
+#### `--findings` (conditional - required unless `--mobsf-url` is used)
 
 The absolute or relative file path to the JSON findings file produced by either MobSF or Semgrep. This file contains the list of vulnerabilities, weaknesses, and insecure API usages that the tool will attempt to match against the APK's call graph. The file must be valid JSON and must conform to one of the two supported formats:
 
@@ -154,6 +196,8 @@ The absolute or relative file path to the JSON findings file produced by either 
 - **Semgrep format:** A JSON object containing a `results` top-level array, where each element represents a finding with `check_id`, `path`, and `extra` fields.
 
 If the file is empty, malformed, or does not match either format, the tool will exit with an error.
+
+This flag is not required when `--mobsf-url` is used, because the tool fetches the findings directly from MobSF. If both `--findings` and `--mobsf-url` are provided, `--mobsf-url` takes precedence and `--findings` is ignored.
 
 Example:
 ```
@@ -219,18 +263,74 @@ Example:
 python reachability.py --apk target.apk --findings findings.json --debug
 ```
 
+#### `--mobsf-url` (optional)
+
+The base URL of a running MobSF instance (e.g., `http://localhost:8000`). When this flag is provided, the tool enters **auto-scan mode**: it uploads the APK to MobSF, triggers a static analysis scan, waits for the scan to complete, and fetches the full JSON report — all via the MobSF REST API. This eliminates the need to manually scan the APK and export the findings file.
+
+The MobSF instance must be running and reachable at the specified URL before the tool is invoked. The tool communicates with the following MobSF API endpoints:
+
+- `POST /api/v1/upload` — uploads the APK file
+- `POST /api/v1/scan` — triggers the static analysis scan (MobSF v4 typically returns the full report synchronously from this endpoint)
+- `POST /api/v1/report_json` — fetches the report if the scan response was asynchronous
+
+If MobSF does not return a scan result synchronously, the tool polls `/api/v1/report_json` every 5 seconds for up to 5 minutes before timing out.
+
+When `--mobsf-url` is provided, the `--findings` flag becomes optional and `--source` is automatically set to `mobsf`.
+
+Example:
+```
+--mobsf-url http://localhost:8000
+--mobsf-url http://192.168.1.50:8000
+```
+
+#### `--mobsf-key` (conditional - required when `--mobsf-url` is set)
+
+The REST API key for authenticating with the MobSF instance. This key is displayed on the MobSF home page when you first access the web UI, and can also be found in the MobSF settings.
+
+The API key is sent as an `Authorization` header with every request to the MobSF API. If the key is invalid or missing, MobSF will return a 401 error and the tool will exit.
+
+Example:
+```
+--mobsf-key 091488ca5d4b61f5ca5340478c060d668d78db5d1d80e0bd247a5b9c0a06b554
+```
+
+#### `--save-findings` (optional)
+
+When using auto-scan mode (`--mobsf-url`), this flag saves the raw MobSF JSON report to the specified file path. This is useful for:
+
+- **Re-running the analysis** with different `--max-depth` settings without re-uploading and re-scanning the APK
+- **Archiving** the MobSF report alongside the reachability report for documentation purposes
+- **Debugging** the MobSF parser by inspecting the raw JSON structure
+
+The file is written after the scan completes and before the reachability analysis begins. If the file already exists, it will be overwritten.
+
+When `--mobsf-url` is not used, this flag has no effect.
+
+Example:
+```
+--save-findings ./scans/mobsf_raw_report_2026-03-23.json
+```
+
 ### Example Commands
 
 ```
-# MobSF findings, auto-detected
+# Auto-scan with MobSF (recommended - one command does everything)
+python reachability.py --apk target.apk --mobsf-url http://localhost:8000 --mobsf-key YOUR_API_KEY --output report.md
+
+# Auto-scan with MobSF and save the raw report for re-use
+python reachability.py --apk target.apk --mobsf-url http://localhost:8000 --mobsf-key YOUR_API_KEY --save-findings mobsf_report.json --output report.md
+
+# Re-run against a previously saved MobSF report (no re-scanning needed)
+python reachability.py --apk target.apk --findings mobsf_report.json --output report.md
+
+# Pre-exported MobSF findings, auto-detected format
 python reachability.py --apk com.banking.app.apk --findings mobsf_report.json
 
-# Semgrep findings, explicit source, deeper traversal
+# Semgrep findings, explicit source, deeper traversal (experimental)
 python reachability.py --apk com.banking.app.apk --findings semgrep_findings.json --source semgrep --max-depth 20
 
 # Quick test with included sample findings
 python reachability.py --apk sample.apk --findings sample_mobsf_findings.json --output test_report.md
-python reachability.py --apk sample.apk --findings sample_semgrep_findings.json --output test_report.md
 ```
 
 ---
@@ -337,6 +437,28 @@ The tool tries to match each finding to a call-graph node using progressively lo
 
 ## Practical Workflow
 
+### Workflow A: Auto-Scan (recommended)
+
+```
+1. Start MobSF (docker run -p 8000:8000 opensecurity/mobile-security-framework-mobsf)
+      |
+      v
+2. Get your APK + note the MobSF API key from the web UI
+      |
+      v
+3. Run: python reachability.py --apk target.apk --mobsf-url http://localhost:8000 --mobsf-key KEY
+      |
+      v
+4. Open report.md
+      |
+      v
+5. Triage REACHABLE findings first (check FP Risk flags)
+6. Consider raising --max-depth if you have many NOT REACHABLE results
+7. Investigate UNRESOLVED findings manually if severity is High/Critical
+```
+
+### Workflow B: Pre-Exported Findings
+
 ```
 1. Get your APK
       |
@@ -344,7 +466,7 @@ The tool tries to match each finding to a call-graph node using progressively lo
 2. Run MobSF or Semgrep to generate findings JSON
       |
       v
-3. Run reachability.py with --apk and --findings
+3. Run: python reachability.py --apk target.apk --findings findings.json
       |
       v
 4. Open report.md
@@ -413,6 +535,12 @@ Each finding includes CWE IDs, OWASP Mobile Top 10 mapping, source line numbers,
 | 0 entry points resolved | Manifest components could not be matched to call graph nodes | Run with `--debug` to compare manifest Dalvik class names against actual node labels |
 | Very slow analysis | Large APK (100k+ methods) | Normal - call graph construction takes time; wait it out |
 | `UnicodeEncodeError` on Windows | Terminal encoding | Run: `set PYTHONUTF8=1` then retry |
+| `Cannot connect to MobSF` | MobSF not running or wrong URL | Verify MobSF is running: open the URL in a browser. Check the port number. |
+| `MobSF API error 401` | Invalid API key | Copy the API key from the MobSF home page or settings. Ensure no extra spaces. |
+| `MobSF API error 400` on upload | APK too large or corrupted | Check the APK file size. MobSF may have upload limits depending on configuration. |
+| `MobSF scan did not complete within 300 seconds` | Very large APK or MobSF under heavy load | Check the MobSF web UI for scan status. You can also export the report manually and use `--findings` instead. |
+| `--mobsf-key is required` | `--mobsf-url` provided without `--mobsf-key` | Both flags are needed for auto-scan mode. |
+| `Either --findings or --mobsf-url is required` | Neither findings source provided | Provide `--findings path/to/findings.json` or `--mobsf-url http://localhost:8000 --mobsf-key KEY` |
 
 ### Debugging "All NOT REACHABLE" Results
 
@@ -421,6 +549,13 @@ If the report shows all findings as NOT REACHABLE when you expect some to be REA
 ```
 python reachability.py --apk target.apk --findings findings.json --debug 2> debug_log.txt
 ```
+
+Or with auto-scan:
+```
+python reachability.py --apk target.apk --mobsf-url http://localhost:8000 --mobsf-key KEY --save-findings mobsf_report.json --debug 2> debug_log.txt
+```
+
+> **Note:** When using `--debug`, Androguard's internal logging (via `loguru`) may also print to stderr, producing very large output (50MB+). The tool's own diagnostic lines are prefixed with `[DEBUG]`, `[INFO]`, or `[WARN]`. You can filter them with: `findstr /B "[" debug_log.txt` (Windows) or `grep "^\[" debug_log.txt` (Linux/macOS).
 
 Then open `debug_log.txt` and check each stage in order:
 

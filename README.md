@@ -7,25 +7,25 @@ Most scanners flag every pattern match as a finding — but if no execution path
 ## How It Works
 
 ```
-                  +-----------+          +------------------+
-  APK file ------>| Androguard|--------->|  Call Graph       |
-                  +-----------+          |  (37k+ nodes)    |
-                                         +--------+---------+
-                                                  |
-  MobSF/Semgrep  +-----------+                    |
-  findings  ----->|  Parser   |---> Sinks          |
-                  +-----------+        |           |
-                                       v           v
-                                 +-----+-----+-----+-----+
-                                 |    Bounded BFS         |
-                                 |  Entry Points -> Sinks |
-                                 +-----+-----+-----------+
-                                       |     |
-                              REACHABLE   NOT REACHABLE
-                                 |
-                          FP Risk Checks
-                                 |
-                          Markdown Report
+                                           +------------------+
+                  +-----------+            |  Call Graph       |
+  APK file ------>| Androguard|----------->|  (37k+ nodes)    |
+                  +-----------+            +--------+---------+
+                                                    |
+                  +-----------+                     |
+  MobSF/Semgrep  |  Parser   |---> Sinks           |
+  findings  ----->|           |        |            |
+                  +-----------+        v            v
+        ^                        +-----+------+-----+-----+
+        |                        |     Bounded BFS         |
+  [auto-scan]                    |  Entry Points -> Sinks  |
+        |                        +-----+------+-----------+
+  +-----------+                        |      |
+  | MobSF API |               REACHABLE   NOT REACHABLE
+  | (optional)|                    |
+  +-----------+             FP Risk Checks
+                                   |
+                            Markdown Report
 ```
 
 1. **Androguard** parses the APK and builds a directed call graph using **NetworkX**
@@ -42,9 +42,22 @@ Most scanners flag every pattern match as a finding — but if no execution path
 pip install androguard networkx
 ```
 
-### Run with MobSF findings
+### Option 1: Auto-scan with MobSF (recommended)
+
+No need to manually export findings. The tool uploads the APK, triggers the scan, fetches the report, and runs reachability analysis in one command:
+
 ```
-python reachability.py --apk target.apk --findings mobsf_report.json --source mobsf --output report.md
+python reachability.py --apk target.apk --mobsf-url http://localhost:8000 --mobsf-key YOUR_API_KEY --output report.md
+```
+
+Prerequisites: MobSF must be running (e.g. `docker run -p 8000:8000 opensecurity/mobile-security-framework-mobsf`).
+
+### Option 2: Pre-generated findings file
+
+If you already have a MobSF or Semgrep JSON report:
+
+```
+python reachability.py --apk target.apk --findings mobsf_report.json --output report.md
 ```
 
 ### Run with Semgrep findings (experimental)
@@ -57,11 +70,14 @@ python reachability.py --apk target.apk --findings semgrep_findings.json --sourc
 | Flag | Required | Default | Description |
 |---|---|---|---|
 | `--apk` | Yes | - | Path to the APK file |
-| `--findings` | Yes | - | Path to MobSF or Semgrep JSON findings |
+| `--findings` | Conditional | - | Path to MobSF or Semgrep JSON findings. Not required when using `--mobsf-url`. |
 | `--source` | No | auto-detect | Force format: `mobsf` or `semgrep` |
 | `--output` | No | `report.md` | Output Markdown report path |
 | `--max-depth` | No | `15` | Max BFS traversal depth (hops) |
 | `--debug` | No | off | Print diagnostic output to stderr |
+| `--mobsf-url` | No | - | MobSF server URL. Enables auto-scan mode (upload, scan, fetch report). |
+| `--mobsf-key` | Conditional | - | MobSF REST API key. Required when `--mobsf-url` is set. |
+| `--save-findings` | No | - | Save the auto-fetched MobSF report JSON to disk for re-use. |
 
 ## Example Output
 
@@ -118,8 +134,9 @@ Findings are matched to call-graph nodes using progressively looser strategies:
 
 | Source | Status | Notes |
 |---|---|---|
-| **MobSF** | Validated | Tested against real MobSF v4 API output (`/api/v1/report_json`) |
-| **Semgrep** | Experimental | Parser built from documented schema; not yet tested with real output |
+| **MobSF (auto-scan)** | Validated | Uploads APK, triggers scan, fetches report via MobSF REST API. Tested against MobSF v4. |
+| **MobSF (file)** | Validated | Accepts pre-exported JSON from `/api/v1/report_json` or hand-crafted format. |
+| **Semgrep** | Experimental | Parser built from documented schema; not yet tested with real output. |
 
 ## Repository Contents
 
@@ -145,7 +162,8 @@ Findings are matched to call-graph nodes using progressively looser strategies:
 - **Python 3.8+**
 - **[Androguard](https://github.com/androguard/androguard)** — APK parsing, DEX bytecode analysis, call graph generation
 - **[NetworkX](https://networkx.org/)** — directed graph traversal (bounded BFS)
-- Standard library: `argparse`, `json`, `re`, `collections.deque`
+- **[MobSF](https://github.com/MobSF/Mobile-Security-Framework-MobSF)** (optional) — automated vulnerability scanning via REST API
+- Standard library: `argparse`, `json`, `re`, `collections.deque`, `urllib`
 
 ## License
 
