@@ -1,0 +1,305 @@
+{
+  "code_analysis": {
+    "android_insecure_logging_credentials": {
+      "severity": "high",
+      "metadata": {
+        "description": "Credentials Logged to System Log"
+      },
+      "files": [
+        {
+          "class_name": "com.test.reachability.MainActivity",
+          "method_name": "logCredentials",
+          "path": "com/test/reachability/MainActivity.java"
+        }
+      ]
+    },
+    "android_credential_leak_url": {
+      "severity": "critical",
+      "metadata": {
+        "description": "Credentials Leaked via URL Parameter"
+      },
+      "files": [
+        {
+          "class_name": "com.test.reachability.MainActivity",
+          "method_name": "leakCredentialsToUrl",
+          "path": "com/test/reachability/MainActivity.java"
+        }
+      ]
+    },
+    "android_destructive_database_operation": {
+      "severity": "high",
+      "metadata": {
+        "description": "Destructive Database Operation Without Confirmation"
+      },
+      "files": [
+        {
+          "class_name": "com.test.reachability.MainActivity",
+          "method_name": "nukeDatabase",
+          "path": "com/test/reachability/MainActivity.java"
+        }
+      ]
+    },
+    "android_external_storage_credentials": {
+      "severity": "high",
+      "metadata": {
+        "description": "Credentials Written to External Storage"
+      },
+      "files": [
+        {
+          "class_name": "com.test.reachability.MainActivity",
+          "method_name": "writeCredsToExternalStorage",
+          "path": "com/test/reachability/MainActivity.java"
+        }
+      ]
+    },
+    "android_cleartext_http": {
+      "severity": "high",
+      "metadata": {
+        "description": "Cleartext HTTP Traffic - No TLS"
+      },
+      "files": [
+        {
+          "class_name": "com.test.reachability.NetworkActivity",
+          "method_name": "fetchHttp",
+          "path": "com/test/reachability/NetworkActivity.java"
+        }
+      ]
+    },
+    "android_ssl_bypass_no_pinning": {
+      "severity": "critical",
+      "metadata": {
+        "description": "HTTPS Without Certificate Pinning"
+      },
+      "files": [
+        {
+          "class_name": "com.test.reachability.NetworkActivity",
+          "method_name": "fetchHttpsNoPinning",
+          "path": "com/test/reachability/NetworkActivity.java"
+        }
+      ]
+    },
+    "android_ssl_trustmanager_bypass": {
+      "severity": "critical",
+      "metadata": {
+        "description": "TrustManager Accepts All Certificates"
+      },
+      "files": [
+        {
+          "class_name": "com.test.reachability.NetworkActivity$1",
+          "method_name": "checkServerTrusted",
+          "path": "com/test/reachability/NetworkActivity.java"
+        }
+      ]
+    },
+    "android_data_sent_to_analytics": {
+      "severity": "medium",
+      "metadata": {
+        "description": "Sensitive Data Sent to Analytics Endpoint"
+      },
+      "files": [
+        {
+          "class_name": "com.test.reachability.NetworkActivity",
+          "method_name": "sendToAnalytics",
+          "path": "com/test/reachability/NetworkActivity.java"
+        }
+      ]
+    },
+    "android_shared_prefs_write_secret": {
+      "severity": "high",
+      "metadata": {
+        "description": "Secret Written to SharedPreferences Without Encryption"
+      },
+      "files": [
+        {
+          "class_name": "com.test.reachability.StorageActivity",
+          "method_name": "writeSecret",
+          "path": "com/test/reachability/StorageActivity.java"
+        }
+      ]
+    },
+    "android_shared_prefs_read_secret": {
+      "severity": "medium",
+      "metadata": {
+        "description": "Secret Read from Unencrypted SharedPreferences"
+      },
+      "files": [
+        {
+          "class_name": "com.test.reachability.StorageActivity",
+          "method_name": "readSecret",
+          "path": "com/test/reachability/StorageActivity.java"
+        }
+      ]
+    },
+    "android_insecure_logging_sensitive": {
+      "severity": "high",
+      "metadata": {
+        "description": "Sensitive Data Written to System Log"
+      },
+      "files": [
+        {
+          "class_name": "com.test.reachability.StorageActivity",
+          "method_name": "logSensitiveData",
+          "path": "com/test/reachability/StorageActivity.java"
+        }
+      ]
+    },
+    "android_conditional_delete_secrets": {
+      "severity": "medium",
+      "metadata": {
+        "description": "Conditional Secret Deletion May Leave Residual Data"
+      },
+      "files": [
+        {
+          "class_name": "com.test.reachability.StorageActivity",
+          "method_name": "conditionallyDeleteSecrets",
+          "path": "com/test/reachability/StorageActivity.java"
+        }
+      ]
+    },
+    "android_sql_injection_login": {
+      "severity": "critical",
+      "metadata": {
+        "description": "SQL Injection in Login Query"
+      },
+      "files": [
+        {
+          "class_name": "com.test.reachability.SqlActivity",
+          "method_name": "performLogin",
+          "path": "com/test/reachability/SqlActivity.java"
+        }
+      ]
+    },
+    "android_sql_injection_admin": {
+      "severity": "critical",
+      "metadata": {
+        "description": "SQL Injection in Admin Query Execution"
+      },
+      "files": [
+        {
+          "class_name": "com.test.reachability.SqlActivity",
+          "method_name": "executeAdminQuery",
+          "path": "com/test/reachability/SqlActivity.java"
+        }
+      ]
+    },
+    "android_unencrypted_database": {
+      "severity": "high",
+      "metadata": {
+        "description": "SQLite Database Accessed Without Encryption"
+      },
+      "files": [
+        {
+          "class_name": "com.test.reachability.UserDatabaseHelper",
+          "method_name": "getWritableDatabase",
+          "path": "com/test/reachability/UserDatabaseHelper.java"
+        }
+      ]
+    },
+    "android_dead_code_authenticate": {
+      "severity": "high",
+      "metadata": {
+        "description": "Hardcoded Admin Authentication in Dead Code Path"
+      },
+      "files": [
+        {
+          "class_name": "com.test.reachability.DeadAdminClient",
+          "method_name": "authenticate",
+          "path": "com/test/reachability/DeadAdminClient.java"
+        }
+      ]
+    },
+    "android_dead_code_exfiltration": {
+      "severity": "critical",
+      "metadata": {
+        "description": "Contact Exfiltration in Dead Code Path"
+      },
+      "files": [
+        {
+          "class_name": "com.test.reachability.DeadAdminClient",
+          "method_name": "exfiltrateContacts",
+          "path": "com/test/reachability/DeadAdminClient.java"
+        }
+      ]
+    },
+    "android_legacy_data_upload": {
+      "severity": "high",
+      "metadata": {
+        "description": "Legacy Bulk Data Upload Without Authentication"
+      },
+      "files": [
+        {
+          "class_name": "com.test.reachability.LegacyDataUploader",
+          "method_name": "uploadAll",
+          "path": "com/test/reachability/LegacyDataUploader.java"
+        }
+      ]
+    },
+    "android_exposed_activity": {
+      "severity": "medium",
+      "metadata": {
+        "description": "Exported Activity Accessible to External Applications"
+      },
+      "files": [
+        {
+          "class_name": "com.test.reachability.ExposedActivity",
+          "method_name": "onCreate",
+          "path": "com/test/reachability/ExposedActivity.java"
+        }
+      ]
+    },
+    "android_phantom_service": {
+      "severity": "medium",
+      "metadata": {
+        "description": "Background Service With No Intent Filter"
+      },
+      "files": [
+        {
+          "class_name": "com.test.reachability.PhantomService",
+          "method_name": "onStartCommand",
+          "path": "com/test/reachability/PhantomService.java"
+        }
+      ]
+    }
+  },
+  "android_api": {
+    "api_database_raw_query": {
+      "severity": "high",
+      "metadata": {
+        "description": "Direct rawQuery Usage on SQLite Database"
+      },
+      "files": [
+        {
+          "class_name": "com.test.reachability.SqlActivity",
+          "method_name": "performLogin",
+          "path": "com/test/reachability/SqlActivity.java"
+        }
+      ]
+    },
+    "api_shared_preferences_access": {
+      "severity": "warning",
+      "metadata": {
+        "description": "Application Accesses SharedPreferences"
+      },
+      "files": [
+        {
+          "class_name": "com.test.reachability.StorageActivity",
+          "method_name": "getSharedPreferences",
+          "path": "com/test/reachability/StorageActivity.java"
+        }
+      ]
+    },
+    "api_http_connection": {
+      "severity": "warning",
+      "metadata": {
+        "description": "Application Opens HTTP Connections"
+      },
+      "files": [
+        {
+          "class_name": "com.test.reachability.NetworkActivity",
+          "method_name": "fetchHttp",
+          "path": "com/test/reachability/NetworkActivity.java"
+        }
+      ]
+    }
+  }
+}

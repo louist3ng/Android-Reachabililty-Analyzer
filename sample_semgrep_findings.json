@@ -1,0 +1,408 @@
+{
+  "results": [
+    {
+      "check_id": "java.lang.security.audit.crypto.insecure-random",
+      "path": "app/src/main/java/com/example/crypto/CryptoHelper.java",
+      "start": {"line": 42, "col": 9},
+      "end": {"line": 42, "col": 38},
+      "extra": {
+        "severity": "HIGH",
+        "lines": "Random rand = new Random();",
+        "metadata": {
+          "message": "Insecure Random Number Generator used for security-sensitive operation",
+          "severity": "HIGH",
+          "cwe": ["CWE-330"],
+          "owasp": ["M5: Insufficient Cryptography"],
+          "references": ["https://owasp.org/www-community/vulnerabilities/Insecure_Randomness"]
+        }
+      }
+    },
+    {
+      "check_id": "java.lang.security.audit.ssl.ssl-no-verify",
+      "path": "app/src/main/java/com/example/net/TrustAllCerts.java",
+      "start": {"line": 18, "col": 5},
+      "end": {"line": 18, "col": 82},
+      "extra": {
+        "severity": "CRITICAL",
+        "lines": "public void checkServerTrusted(X509Certificate[] chain, String authType) {}",
+        "metadata": {
+          "message": "SSL/TLS certificate verification disabled - empty TrustManager implementation",
+          "severity": "CRITICAL",
+          "cwe": ["CWE-295"],
+          "owasp": ["M3: Insecure Communication"],
+          "references": ["https://cwe.mitre.org/data/definitions/295.html"]
+        }
+      }
+    },
+    {
+      "check_id": "java.lang.security.audit.ssl.hostname-verifier-bypass",
+      "path": "app/src/main/java/com/example/net/HttpClient.java",
+      "start": {"line": 55, "col": 9},
+      "end": {"line": 57, "col": 10},
+      "extra": {
+        "severity": "CRITICAL",
+        "lines": "HostnameVerifier allHostsValid = (hostname, session) -> true;",
+        "metadata": {
+          "message": "HostnameVerifier that accepts all hostnames - allows MITM attacks",
+          "severity": "CRITICAL",
+          "cwe": ["CWE-297"],
+          "owasp": ["M3: Insecure Communication"]
+        }
+      }
+    },
+    {
+      "check_id": "java.lang.security.audit.sqli.raw-query",
+      "path": "app/src/main/java/com/example/db/QueryBuilder.java",
+      "start": {"line": 31, "col": 9},
+      "end": {"line": 31, "col": 72},
+      "extra": {
+        "severity": "HIGH",
+        "lines": "Cursor cursor = db.rawQuery(\"SELECT * FROM users WHERE name = '\" + name + \"'\", null);",
+        "metadata": {
+          "message": "SQL injection via string concatenation in rawQuery",
+          "severity": "HIGH",
+          "cwe": ["CWE-89"],
+          "owasp": ["M7: Client Code Quality"]
+        }
+      }
+    },
+    {
+      "check_id": "java.lang.security.audit.crypto.weak-hash-md5",
+      "path": "app/src/main/java/com/example/crypto/HashUtil.java",
+      "start": {"line": 15, "col": 9},
+      "end": {"line": 15, "col": 55},
+      "extra": {
+        "severity": "HIGH",
+        "lines": "MessageDigest md = MessageDigest.getInstance(\"MD5\");",
+        "metadata": {
+          "message": "Weak hashing algorithm MD5 used - vulnerable to collision attacks",
+          "severity": "HIGH",
+          "cwe": ["CWE-328"],
+          "owasp": ["M5: Insufficient Cryptography"]
+        }
+      }
+    },
+    {
+      "check_id": "java.lang.security.audit.crypto.weak-hash-sha1",
+      "path": "app/src/main/java/com/example/crypto/HashUtil.java",
+      "start": {"line": 22, "col": 9},
+      "end": {"line": 22, "col": 56},
+      "extra": {
+        "severity": "MEDIUM",
+        "lines": "MessageDigest md = MessageDigest.getInstance(\"SHA-1\");",
+        "metadata": {
+          "message": "Weak hashing algorithm SHA-1 used",
+          "severity": "MEDIUM",
+          "cwe": ["CWE-328"],
+          "owasp": ["M5: Insufficient Cryptography"]
+        }
+      }
+    },
+    {
+      "check_id": "java.lang.security.audit.crypto.des-encryption",
+      "path": "app/src/main/java/com/example/crypto/EncryptionHelper.java",
+      "start": {"line": 28, "col": 9},
+      "end": {"line": 28, "col": 58},
+      "extra": {
+        "severity": "HIGH",
+        "lines": "Cipher cipher = Cipher.getInstance(\"DES/ECB/PKCS5Padding\");",
+        "metadata": {
+          "message": "Insecure cipher DES with ECB mode - use AES/GCM instead",
+          "severity": "HIGH",
+          "cwe": ["CWE-327"],
+          "owasp": ["M5: Insufficient Cryptography"]
+        }
+      }
+    },
+    {
+      "check_id": "java.lang.security.audit.hardcoded-secret",
+      "path": "app/src/main/java/com/example/config/AppConfig.java",
+      "start": {"line": 12, "col": 5},
+      "end": {"line": 12, "col": 78},
+      "extra": {
+        "severity": "HIGH",
+        "lines": "private static final String API_KEY = \"AIzaSyD-FAKE-KEY-1234567890abcdef\";",
+        "metadata": {
+          "message": "Hardcoded API key found in source code",
+          "severity": "HIGH",
+          "cwe": ["CWE-798"],
+          "owasp": ["M9: Reverse Engineering"]
+        }
+      }
+    },
+    {
+      "check_id": "java.lang.security.audit.hardcoded-password",
+      "path": "app/src/main/java/com/example/auth/AuthUtil.java",
+      "start": {"line": 8, "col": 5},
+      "end": {"line": 8, "col": 52},
+      "extra": {
+        "severity": "HIGH",
+        "lines": "private String masterPassword = \"admin123!\";",
+        "metadata": {
+          "message": "Hardcoded password found in source code",
+          "severity": "HIGH",
+          "cwe": ["CWE-798"],
+          "owasp": ["M9: Reverse Engineering"]
+        }
+      }
+    },
+    {
+      "check_id": "java.lang.security.audit.logging.sensitive-info-log",
+      "path": "app/src/main/java/com/example/auth/LoginActivity.java",
+      "start": {"line": 67, "col": 9},
+      "end": {"line": 67, "col": 58},
+      "extra": {
+        "severity": "MEDIUM",
+        "lines": "Log.d(TAG, \"User token: \" + token);",
+        "metadata": {
+          "message": "Sensitive data (auth token) written to Android log",
+          "severity": "MEDIUM",
+          "cwe": ["CWE-532"],
+          "owasp": ["M1: Improper Platform Usage"]
+        }
+      }
+    },
+    {
+      "check_id": "java.lang.security.audit.logging.credit-card-log",
+      "path": "app/src/main/java/com/example/payment/PaymentProcessor.java",
+      "start": {"line": 103, "col": 9},
+      "end": {"line": 103, "col": 62},
+      "extra": {
+        "severity": "HIGH",
+        "lines": "Log.i(TAG, \"Processing card: \" + cardNumber);",
+        "metadata": {
+          "message": "Credit card number written to Android log - PCI DSS violation",
+          "severity": "HIGH",
+          "cwe": ["CWE-532"],
+          "owasp": ["M2: Insecure Data Storage"]
+        }
+      }
+    },
+    {
+      "check_id": "java.lang.security.audit.command-injection",
+      "path": "app/src/main/java/com/example/util/ShellExecutor.java",
+      "start": {"line": 19, "col": 9},
+      "end": {"line": 19, "col": 55},
+      "extra": {
+        "severity": "CRITICAL",
+        "lines": "Process p = Runtime.getRuntime().exec(userInput);",
+        "metadata": {
+          "message": "OS command injection via Runtime.exec() with user-controlled input",
+          "severity": "CRITICAL",
+          "cwe": ["CWE-78"],
+          "owasp": ["M7: Client Code Quality"]
+        }
+      }
+    },
+    {
+      "check_id": "java.lang.security.audit.intent.implicit-intent-sensitive",
+      "path": "app/src/main/java/com/example/sharing/ShareHelper.java",
+      "start": {"line": 34, "col": 9},
+      "end": {"line": 38, "col": 10},
+      "extra": {
+        "severity": "MEDIUM",
+        "lines": "Intent shareIntent = new Intent(Intent.ACTION_SEND);\nshareIntent.putExtra(Intent.EXTRA_TEXT, sensitiveData);",
+        "metadata": {
+          "message": "Sensitive data sent via implicit intent - any app can intercept",
+          "severity": "MEDIUM",
+          "cwe": ["CWE-927"],
+          "owasp": ["M1: Improper Platform Usage"]
+        }
+      }
+    },
+    {
+      "check_id": "java.lang.security.audit.intent.pending-intent-mutable",
+      "path": "app/src/main/java/com/example/push/PushReceiver.java",
+      "start": {"line": 25, "col": 9},
+      "end": {"line": 25, "col": 85},
+      "extra": {
+        "severity": "HIGH",
+        "lines": "PendingIntent pi = PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT);",
+        "metadata": {
+          "message": "Mutable PendingIntent created without FLAG_IMMUTABLE - can be hijacked on API 31+",
+          "severity": "HIGH",
+          "cwe": ["CWE-927"],
+          "owasp": ["M1: Improper Platform Usage"]
+        }
+      }
+    },
+    {
+      "check_id": "java.lang.security.audit.storage.shared-prefs-sensitive",
+      "path": "app/src/main/java/com/example/storage/PrefsManager.java",
+      "start": {"line": 44, "col": 9},
+      "end": {"line": 44, "col": 62},
+      "extra": {
+        "severity": "HIGH",
+        "lines": "editor.putString(\"auth_token\", token).apply();",
+        "metadata": {
+          "message": "Authentication token stored in SharedPreferences without encryption",
+          "severity": "HIGH",
+          "cwe": ["CWE-312"],
+          "owasp": ["M2: Insecure Data Storage"]
+        }
+      }
+    },
+    {
+      "check_id": "java.lang.security.audit.storage.external-storage-write",
+      "path": "app/src/main/java/com/example/storage/FileHelper.java",
+      "start": {"line": 29, "col": 9},
+      "end": {"line": 29, "col": 68},
+      "extra": {
+        "severity": "MEDIUM",
+        "lines": "File file = new File(Environment.getExternalStorageDirectory(), filename);",
+        "metadata": {
+          "message": "Sensitive data written to external storage - accessible by any app",
+          "severity": "MEDIUM",
+          "cwe": ["CWE-276"],
+          "owasp": ["M2: Insecure Data Storage"]
+        }
+      }
+    },
+    {
+      "check_id": "java.lang.security.audit.storage.world-readable",
+      "path": "app/src/main/java/com/example/storage/FileHelper.java",
+      "start": {"line": 38, "col": 9},
+      "end": {"line": 38, "col": 72},
+      "extra": {
+        "severity": "HIGH",
+        "lines": "FileOutputStream fos = openFileOutput(name, Context.MODE_WORLD_READABLE);",
+        "metadata": {
+          "message": "File created with MODE_WORLD_READABLE - any app can read it",
+          "severity": "HIGH",
+          "cwe": ["CWE-732"],
+          "owasp": ["M2: Insecure Data Storage"]
+        }
+      }
+    },
+    {
+      "check_id": "java.lang.security.audit.webview.javascript-interface",
+      "path": "app/src/main/java/com/example/ui/WebHelper.java",
+      "start": {"line": 51, "col": 9},
+      "end": {"line": 51, "col": 62},
+      "extra": {
+        "severity": "HIGH",
+        "lines": "webView.addJavascriptInterface(new JsBridge(), \"Android\");",
+        "metadata": {
+          "message": "JavaScript interface exposed to WebView - may enable code execution on API < 17",
+          "severity": "HIGH",
+          "cwe": ["CWE-749"],
+          "owasp": ["M1: Improper Platform Usage"]
+        }
+      }
+    },
+    {
+      "check_id": "java.lang.security.audit.webview.file-access",
+      "path": "app/src/main/java/com/example/ui/WebHelper.java",
+      "start": {"line": 35, "col": 9},
+      "end": {"line": 35, "col": 55},
+      "extra": {
+        "severity": "HIGH",
+        "lines": "webView.getSettings().setAllowFileAccess(true);",
+        "metadata": {
+          "message": "WebView file access enabled - may allow reading local files",
+          "severity": "HIGH",
+          "cwe": ["CWE-200"],
+          "owasp": ["M1: Improper Platform Usage"]
+        }
+      }
+    },
+    {
+      "check_id": "java.lang.security.audit.provider.path-traversal",
+      "path": "app/src/main/java/com/example/provider/FileProvider.java",
+      "start": {"line": 40, "col": 9},
+      "end": {"line": 42, "col": 10},
+      "extra": {
+        "severity": "CRITICAL",
+        "lines": "File file = new File(baseDir, uri.getLastPathSegment());\nreturn ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY);",
+        "metadata": {
+          "message": "ContentProvider openFile() does not sanitize path - directory traversal possible",
+          "severity": "CRITICAL",
+          "cwe": ["CWE-22"],
+          "owasp": ["M1: Improper Platform Usage"]
+        }
+      }
+    },
+    {
+      "check_id": "java.lang.security.audit.broadcast.unprotected-broadcast",
+      "path": "app/src/main/java/com/example/messaging/NotificationSender.java",
+      "start": {"line": 28, "col": 9},
+      "end": {"line": 30, "col": 10},
+      "extra": {
+        "severity": "HIGH",
+        "lines": "Intent intent = new Intent(\"com.example.USER_DATA\");\nintent.putExtra(\"data\", sensitivePayload);\nsendBroadcast(intent);",
+        "metadata": {
+          "message": "Sensitive data sent via unprotected broadcast - any app with a receiver can intercept",
+          "severity": "HIGH",
+          "cwe": ["CWE-927"],
+          "owasp": ["M1: Improper Platform Usage"]
+        }
+      }
+    },
+    {
+      "check_id": "java.lang.security.audit.deeplink.unvalidated-uri",
+      "path": "app/src/main/java/com/example/deeplink/DeepLinkRouter.java",
+      "start": {"line": 20, "col": 9},
+      "end": {"line": 25, "col": 10},
+      "extra": {
+        "severity": "MEDIUM",
+        "lines": "Uri data = getIntent().getData();\nString path = data.getPath();\nloadContent(path);",
+        "metadata": {
+          "message": "Deep link URI processed without validation - may enable open redirect or data exfiltration",
+          "severity": "MEDIUM",
+          "cwe": ["CWE-601"],
+          "owasp": ["M1: Improper Platform Usage"]
+        }
+      }
+    },
+    {
+      "check_id": "java.lang.security.audit.dynamic-loading.dex-loader",
+      "path": "app/src/main/java/com/example/plugin/PluginLoader.java",
+      "start": {"line": 33, "col": 9},
+      "end": {"line": 33, "col": 89},
+      "extra": {
+        "severity": "HIGH",
+        "lines": "DexClassLoader loader = new DexClassLoader(dexPath, optimizedDir, null, getClassLoader());",
+        "metadata": {
+          "message": "Dynamic code loading via DexClassLoader - loaded code may be tampered with",
+          "severity": "HIGH",
+          "cwe": ["CWE-494"],
+          "owasp": ["M7: Client Code Quality"]
+        }
+      }
+    },
+    {
+      "check_id": "java.lang.security.audit.tapjacking",
+      "path": "app/src/main/java/com/example/payment/PaymentActivity.java",
+      "start": {"line": 45, "col": 9},
+      "end": {"line": 45, "col": 52},
+      "extra": {
+        "severity": "MEDIUM",
+        "lines": "confirmButton.setOnClickListener(v -> processPayment());",
+        "metadata": {
+          "message": "Payment button does not check filterTouchesWhenObscured - vulnerable to tapjacking overlay",
+          "severity": "MEDIUM",
+          "cwe": ["CWE-1021"],
+          "owasp": ["M1: Improper Platform Usage"]
+        }
+      }
+    },
+    {
+      "check_id": "java.lang.security.audit.fragment-injection",
+      "path": "app/src/main/java/com/example/settings/SettingsActivity.java",
+      "start": {"line": 15, "col": 5},
+      "end": {"line": 17, "col": 6},
+      "extra": {
+        "severity": "HIGH",
+        "lines": "protected boolean isValidFragment(String fragmentName) {\n    return true;\n}",
+        "metadata": {
+          "message": "isValidFragment() returns true for all fragments - enables fragment injection",
+          "severity": "HIGH",
+          "cwe": ["CWE-470"],
+          "owasp": ["M1: Improper Platform Usage"]
+        }
+      }
+    }
+  ],
+  "version": "1.56.0",
+  "errors": []
+}

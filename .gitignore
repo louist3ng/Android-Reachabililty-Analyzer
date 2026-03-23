@@ -1,0 +1,19 @@
+# Debug / temp output
+debug_log.txt
+
+# Claude Code project config
+.claude/
+
+# Generated reports (keep samples, ignore user-generated)
+reportv1.md
+reportv2.md
+reportv2_real.md
+reportv2_sample.md
+
+# Real MobSF report (may contain sensitive data)
+mobsf_real_report.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
