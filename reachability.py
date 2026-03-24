@@ -153,7 +153,7 @@ def mobsf_scan(url, api_key, file_hash, apk_path):
 
     # MobSF v4 returns the full report JSON directly from /api/v1/scan
     # when the scan completes synchronously (which it usually does).
-    if "code_analysis" in result or "android_api" in result:
+    if "code_analysis" in result:
         info("Scan completed (synchronous response).")
         return result
 
@@ -176,7 +176,7 @@ def mobsf_poll_scan(url, api_key, file_hash):
         try:
             result = _mobsf_api(url, api_key, "/api/v1/report_json",
                                 data={"hash": file_hash})
-            if result and ("code_analysis" in result or "android_api" in result):
+            if result and "code_analysis" in result:
                 info("Scan report is ready.")
                 return result
         except SystemExit:
@@ -218,7 +218,7 @@ def mobsf_auto_scan(url, api_key, apk_path, save_findings=None):
     scan_result = mobsf_scan(url, api_key, file_hash, apk_path)
 
     # Step 3: If scan didn't return the report, poll for it
-    if scan_result and ("code_analysis" in scan_result or "android_api" in scan_result):
+    if scan_result and "code_analysis" in scan_result:
         report = scan_result
     else:
         report = mobsf_poll_scan(url, api_key, file_hash)
@@ -540,7 +540,7 @@ def _has_intent_filter(apk, comp_name, comp_type):
 def detect_source(findings_data):
     """Auto-detect whether findings come from MobSF."""
     if isinstance(findings_data, dict):
-        if "code_analysis" in findings_data or "android_api" in findings_data:
+        if "code_analysis" in findings_data:
             return "mobsf"
     return None
 
@@ -565,17 +565,22 @@ def parse_findings_from_data(data, source_hint=None):
         return _parse_mobsf(data), source
     else:
         error_exit("Cannot determine findings format. Ensure the JSON contains "
-                   "code_analysis or android_api keys (MobSF format).")
+                   "a code_analysis key (MobSF format).")
 
 
 def _parse_mobsf(data):
     """
     Parse MobSF findings.  Handles TWO formats:
 
+    Only parses the code_analysis section. The android_api section is ignored
+    because those findings are informational API usage patterns (e.g. "app opens
+    HTTP connections") rather than specific vulnerabilities with meaningful sinks.
+
+    Handles TWO formats:
+
     FORMAT A - Real MobSF API output (v4.x):
         code_analysis.findings.<rule_id>.files = {"com/path/File.java": "12,34"}
         code_analysis.findings.<rule_id>.metadata.severity = "warning"
-        android_api.<rule_id>.files = {"com/path/File.java": "12,34"}
 
     FORMAT B - Hand-crafted / simplified findings:
         code_analysis.<rule_id>.files = [{"class_name": "...", "method_name": "..."}]
@@ -583,13 +588,10 @@ def _parse_mobsf(data):
     """
     findings = []
 
-    for section_key in ("code_analysis", "android_api"):
-        section = data.get(section_key, {})
-        if not isinstance(section, dict):
-            continue
-
+    section = data.get("code_analysis", {})
+    if isinstance(section, dict):
         # FORMAT A: real MobSF nests rules under code_analysis.findings
-        if section_key == "code_analysis" and "findings" in section and isinstance(section["findings"], dict):
+        if "findings" in section and isinstance(section["findings"], dict):
             rules = section["findings"]
         else:
             rules = section

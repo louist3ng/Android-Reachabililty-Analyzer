@@ -260,46 +260,5 @@
         }
       ]
     }
-  },
-  "android_api": {
-    "api_database_raw_query": {
-      "severity": "high",
-      "metadata": {
-        "description": "Direct rawQuery Usage on SQLite Database"
-      },
-      "files": [
-        {
-          "class_name": "com.test.reachability.SqlActivity",
-          "method_name": "performLogin",
-          "path": "com/test/reachability/SqlActivity.java"
-        }
-      ]
-    },
-    "api_shared_preferences_access": {
-      "severity": "warning",
-      "metadata": {
-        "description": "Application Accesses SharedPreferences"
-      },
-      "files": [
-        {
-          "class_name": "com.test.reachability.StorageActivity",
-          "method_name": "getSharedPreferences",
-          "path": "com/test/reachability/StorageActivity.java"
-        }
-      ]
-    },
-    "api_http_connection": {
-      "severity": "warning",
-      "metadata": {
-        "description": "Application Opens HTTP Connections"
-      },
-      "files": [
-        {
-          "class_name": "com.test.reachability.NetworkActivity",
-          "method_name": "fetchHttp",
-          "path": "com/test/reachability/NetworkActivity.java"
-        }
-      ]
-    }
   }
 }
