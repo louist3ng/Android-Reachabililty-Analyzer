@@ -14,26 +14,28 @@ Most scanners flag every pattern match as a finding — but if no execution path
                                                     |
                   +-----------+                     |
   MobSF          |  Parser   |---> Sinks           |
-  findings  ----->|           |        |            |
-                  +-----------+        v            v
-        ^                        +-----+------+-----+-----+
-        |                        |     Bounded BFS         |
-  [auto-scan]                    |  Entry Points -> Sinks  |
-        |                        +-----+------+-----------+
-  +-----------+                        |      |
-  | MobSF API |               REACHABLE   NOT REACHABLE
-  | (optional)|                    |
-  +-----------+             FP Risk Checks
-                                  |
-                           Markdown Report
+  code_analysis-->| (code     |        |            |
+                  |  analysis)|        v            v
+                  +-----------+  +-----+------+-----+-----+
+        ^                        |     Bounded BFS         |
+        |                        |  Entry Points -> Sinks  |
+  [auto-scan]                    +-----+------+-----------+
+        |                              |      |
+  +-----------+               REACHABLE   NOT REACHABLE
+  | MobSF API |                    |
+  | (optional)|             FP Risk Checks
+  +-----------+                    |
+                            Markdown Report
 ```
 
 1. **Androguard** parses the APK and builds a directed call graph using **NetworkX**
 2. Entry points are extracted from the manifest (Activities, Services, Receivers, Providers)
-3. Each MobSF finding is matched to a call-graph node using a multi-tier strategy
+3. Each MobSF `code_analysis` finding is matched to a call-graph node using a multi-tier strategy
 4. **Bounded BFS** determines if a path exists from any entry point to each sink
 5. Reachable findings are annotated with false-positive risk flags
 6. A triaged Markdown report is generated
+
+**Note:** Only the `code_analysis` section of MobSF reports is parsed. The `android_api` and `manifest_analysis` sections are ignored — `android_api` contains informational API usage patterns rather than specific vulnerabilities, and `manifest_analysis` findings are configuration-level issues that don't map to call-graph nodes.
 
 ## Quick Start
 
@@ -90,10 +92,11 @@ Sink:                  Lcom/test/reachability/DeadAdminClient;->exfiltrateContac
 Entry Point(s) Checked: 11
 Reason:                No path found within 15 hops from any entry point
 
-## [UNRESOLVED] Clipboard Data Access - Warning
+## [UNRESOLVED] Insecure WebView - High
 
-Raw Finding:       com.example.utils.ClipHelper.getClipData
+Raw Finding:       com.example.ui.WebHelper.loadUrl
 Reason:            Sink method could not be matched to any call graph node
+Match Confidence:  No match
 ```
 
 ## Report Verdicts
@@ -124,12 +127,14 @@ Findings are matched to call-graph nodes using progressively looser strategies:
 4. **Exact method only** — lowest confidence
 5. **No match** — finding becomes UNRESOLVED
 
-## Supported Findings Formats
+## Supported Findings
 
 | Source | Status | Notes |
 |---|---|---|
 | **MobSF (auto-scan)** | Validated | Uploads APK, triggers scan, fetches report via MobSF REST API. Tested against MobSF v4. |
 | **MobSF (file)** | Validated | Accepts pre-exported JSON from `/api/v1/report_json` or hand-crafted format. |
+
+Only the `code_analysis` section is parsed. The `android_api` section (informational API usage) and `manifest_analysis` section (configuration issues) are not used for reachability analysis.
 
 ## Repository Contents
 
@@ -137,9 +142,13 @@ Findings are matched to call-graph nodes using progressively looser strategies:
 |---|---|
 | `reachability.py` | Main CLI tool (single file, no framework dependencies) |
 | `INSTRUCTIONS.md` | Detailed usage guide with troubleshooting |
-| `sample_mobsf_findings.json` | Sample MobSF findings mapped to the test APK |
-| `reachability-apk-v2.apk` | Test APK with intentional vulnerabilities and dead code |
-| `report.md` | Sample output report |
+| `CLAUDE.md` | Guidance for Claude Code when working in this repository |
+| `sample_mobsf_findings.json` | Sample MobSF `code_analysis` findings mapped to the test APK |
+| `samplereport.md` | Sample output report (pre-generated for reference) |
+| `.gitignore` | Excludes APKs, debug logs, generated reports, and session data |
+
+**Not tracked in repo (obtain separately):**
+- `reachability-apk-v2.apk` — Test APK with intentional vulnerabilities and dead code (`com.test.reachability` package)
 
 ## Limitations
 
@@ -148,6 +157,7 @@ Findings are matched to call-graph nodes using progressively looser strategies:
 - **Obfuscated APKs** — ProGuard/R8 reduces match rates
 - **Reflection / JNI** — paths through reflection may be incomplete
 - **Single APK only** — split APKs and app bundles not supported
+- **code_analysis only** — `android_api` and `manifest_analysis` findings are not analysed
 
 ## Tech Stack
 
