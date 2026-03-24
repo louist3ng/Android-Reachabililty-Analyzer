@@ -3,6 +3,7 @@ debug_log.txt
 
 # Claude Code project config
 .claude/
+CLAUDE.md
 
 # Session context (per-chat reference, not for repo)
 SESSION_CONTEXT.md
@@ -17,6 +18,9 @@ report_auto.md
 # Real MobSF reports (may contain sensitive data)
 mobsf_real_report.json
 mobsf_auto_report.json
+
+# APK files (too large for repo)
+*.apk
 
 # Python
 __pycache__/
