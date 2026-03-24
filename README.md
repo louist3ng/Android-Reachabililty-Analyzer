@@ -1,6 +1,6 @@
 # Android Reachability Analyzer
 
-A proof-of-concept Python CLI tool that determines whether vulnerabilities found by static analysis scanners (MobSF, Semgrep) are actually **reachable** from valid Android entry points.
+A proof-of-concept Python CLI tool that determines whether vulnerabilities found by MobSF are actually **reachable** from valid Android entry points.
 
 Most scanners flag every pattern match as a finding — but if no execution path connects a user-facing entry point to the vulnerable code, it may not be exploitable. This tool bridges that gap by walking the APK's call graph.
 
@@ -13,7 +13,7 @@ Most scanners flag every pattern match as a finding — but if no execution path
                   +-----------+            +--------+---------+
                                                     |
                   +-----------+                     |
-  MobSF/Semgrep  |  Parser   |---> Sinks           |
+  MobSF          |  Parser   |---> Sinks           |
   findings  ----->|           |        |            |
                   +-----------+        v            v
         ^                        +-----+------+-----+-----+
@@ -24,13 +24,13 @@ Most scanners flag every pattern match as a finding — but if no execution path
   | MobSF API |               REACHABLE   NOT REACHABLE
   | (optional)|                    |
   +-----------+             FP Risk Checks
-                                   |
-                            Markdown Report
+                                  |
+                           Markdown Report
 ```
 
 1. **Androguard** parses the APK and builds a directed call graph using **NetworkX**
 2. Entry points are extracted from the manifest (Activities, Services, Receivers, Providers)
-3. Each scanner finding is matched to a call-graph node using a multi-tier strategy
+3. Each MobSF finding is matched to a call-graph node using a multi-tier strategy
 4. **Bounded BFS** determines if a path exists from any entry point to each sink
 5. Reachable findings are annotated with false-positive risk flags
 6. A triaged Markdown report is generated
@@ -52,17 +52,12 @@ python reachability.py --apk target.apk --mobsf-url http://localhost:8000 --mobs
 
 Prerequisites: MobSF must be running (e.g. `docker run -p 8000:8000 opensecurity/mobile-security-framework-mobsf`).
 
-### Option 2: Pre-generated findings file
+### Option 2: Pre-generated MobSF findings file
 
-If you already have a MobSF or Semgrep JSON report:
+If you already have a MobSF JSON report:
 
 ```
 python reachability.py --apk target.apk --findings mobsf_report.json --output report.md
-```
-
-### Run with Semgrep findings (experimental)
-```
-python reachability.py --apk target.apk --findings semgrep_findings.json --source semgrep --output report.md
 ```
 
 ## CLI Options
@@ -70,8 +65,7 @@ python reachability.py --apk target.apk --findings semgrep_findings.json --sourc
 | Flag | Required | Default | Description |
 |---|---|---|---|
 | `--apk` | Yes | - | Path to the APK file |
-| `--findings` | Conditional | - | Path to MobSF or Semgrep JSON findings. Not required when using `--mobsf-url`. |
-| `--source` | No | auto-detect | Force format: `mobsf` or `semgrep` |
+| `--findings` | Conditional | - | Path to MobSF JSON findings. Not required when using `--mobsf-url`. |
 | `--output` | No | `report.md` | Output Markdown report path |
 | `--max-depth` | No | `15` | Max BFS traversal depth (hops) |
 | `--debug` | No | off | Print diagnostic output to stderr |
@@ -136,7 +130,6 @@ Findings are matched to call-graph nodes using progressively looser strategies:
 |---|---|---|
 | **MobSF (auto-scan)** | Validated | Uploads APK, triggers scan, fetches report via MobSF REST API. Tested against MobSF v4. |
 | **MobSF (file)** | Validated | Accepts pre-exported JSON from `/api/v1/report_json` or hand-crafted format. |
-| **Semgrep** | Experimental | Parser built from documented schema; not yet tested with real output. |
 
 ## Repository Contents
 
@@ -145,7 +138,6 @@ Findings are matched to call-graph nodes using progressively looser strategies:
 | `reachability.py` | Main CLI tool (single file, no framework dependencies) |
 | `INSTRUCTIONS.md` | Detailed usage guide with troubleshooting |
 | `sample_mobsf_findings.json` | Sample MobSF findings mapped to the test APK |
-| `sample_semgrep_findings.json` | Sample Semgrep findings (hand-crafted) |
 | `reachability-apk-v2.apk` | Test APK with intentional vulnerabilities and dead code |
 | `report.md` | Sample output report |
 

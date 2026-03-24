@@ -18,15 +18,12 @@ The Android Reachability Analyzer is a proof-of-concept static analysis tool tha
 
 In both modes, the tool parses the `code_analysis` and `android_api` sections to extract class names, method names, and severity levels for each reported issue.
 
-### Semgrep (Not Yet Fully Implemented)
-[Semgrep](https://semgrep.dev/) is a lightweight static analysis engine that matches code patterns using declarative rules. When run against decompiled Android source code (e.g., output from JADX), Semgrep produces structured JSON results containing file paths, matched code lines, CWE identifiers, and OWASP mappings. This tool includes a preliminary parser for Semgrep's `--json` output, but **Semgrep integration has not been validated against a real Semgrep report**. The parser was built against the documented Semgrep JSON schema and a hand-crafted sample file, but may require adjustments once tested with actual Semgrep output (similar to the adjustments that were needed for the MobSF parser). Semgrep support should be considered experimental until that validation is complete.
-
 ### How the Technologies Fit Together
 
 The analysis pipeline operates in a linear sequence:
 
 1. **Androguard** parses the APK and produces a directed call graph (via NetworkX) along with parsed manifest metadata.
-2. The vulnerability findings are obtained either by **auto-scanning via the MobSF REST API** or by loading a pre-exported **MobSF or Semgrep** findings file. In either case, the findings are parsed into a normalised list of vulnerability sinks, each mapped to a class and method name.
+2. The vulnerability findings are obtained either by **auto-scanning via the MobSF REST API** or by loading a pre-exported **MobSF** findings file. In either case, the findings are parsed into a normalised list of vulnerability sinks, each mapped to a class and method name.
 3. Each sink is matched against nodes in the call graph using a multi-tier matching strategy (exact signature, class+method, class-only, method-only).
 4. **NetworkX** performs bounded BFS traversal from each Android entry point (exported Activities, Services, Receivers, Providers) toward each matched sink node.
 5. The results are enriched with false-positive risk annotations derived from manifest properties (export status, permissions, intent filters) and call-chain characteristics (reflection usage, third-party library origin).
@@ -38,8 +35,8 @@ The tool is implemented as a single Python CLI script (`reachability.py`) with n
 
 ## What This Tool Does
 
-`reachability.py` takes an Android APK and a vulnerability findings file (from MobSF
-or Semgrep) and determines whether each vulnerability can actually be *reached* from
+`reachability.py` takes an Android APK and a vulnerability findings file (from MobSF)
+and determines whether each vulnerability can actually be *reached* from
 a real Android entry point (Activity, Service, BroadcastReceiver, ContentProvider).
 It outputs a Markdown report showing which findings are **REACHABLE**, **NOT REACHABLE**,
 or **UNRESOLVED**, and flags false-positive risks where relevant.
@@ -51,8 +48,7 @@ or **UNRESOLVED**, and flags false-positive risks where relevant.
 | File | Description |
 |---|---|
 | `reachability.py` | The main CLI tool |
-| `sample_mobsf_findings.json` | 38 findings across 28 rules - WebView, crypto, storage, intents, injection, API access |
-| `sample_semgrep_findings.json` | 25 findings with CWE/OWASP metadata - SSL, crypto, injection, storage, component security (hand-crafted sample; not yet validated against real Semgrep output) |
+| `sample_mobsf_findings.json` | Sample MobSF findings mapped to the test APK |
 | `report.md` | Sample output report (pre-generated for reference) |
 | `INSTRUCTIONS.md` | This file |
 
@@ -123,22 +119,7 @@ If you prefer to export the MobSF report manually (or want to re-run against a p
      ```
    - **Via UI:** Click the JSON export button on the scan results page
 3. The JSON should contain `code_analysis` and/or `android_api` sections
-4. Pass the downloaded file as `--findings mobsf_findings.json --source mobsf`
-
-#### Option C - Semgrep (Experimental)
-
-> **Note:** Semgrep support has not yet been validated against a real Semgrep JSON report. The parser was built from the documented schema and a hand-crafted sample file. If you test with a real Semgrep report and encounter parsing issues, please report them so the parser can be updated.
-
-1. Install Semgrep: `pip install semgrep`
-2. Run against your decompiled APK source (e.g. output from jadx):
-   ```
-   semgrep --config=p/android --json --output semgrep_findings.json ./decompiled_src/
-   ```
-   Or use a broader Java security audit ruleset:
-   ```
-   semgrep --config "p/java-security-audit" --json -o semgrep_findings.json ./source/
-   ```
-3. Pass the output file as `--findings semgrep_findings.json --source semgrep`
+4. Pass the downloaded file as `--findings mobsf_findings.json`
 
 ---
 
@@ -168,8 +149,7 @@ python reachability.py --apk target.apk --mobsf-url http://localhost:8000 --mobs
 | Flag | Required | Default | Description |
 |---|---|---|---|
 | `--apk` | Yes | - | Path to the APK file |
-| `--findings` | Conditional | - | Path to MobSF or Semgrep JSON findings. Not required when using `--mobsf-url`. |
-| `--source` | No | auto-detect | Force findings format: `mobsf` or `semgrep` |
+| `--findings` | Conditional | - | Path to MobSF JSON findings. Not required when using `--mobsf-url`. |
 | `--output` | No | `report.md` | Output path for the Markdown report |
 | `--max-depth` | No | `15` | Max BFS traversal depth (hops) |
 | `--debug` | No | off | Print detailed diagnostic output to stderr |
@@ -190,33 +170,15 @@ Example:
 
 #### `--findings` (conditional - required unless `--mobsf-url` is used)
 
-The absolute or relative file path to the JSON findings file produced by either MobSF or Semgrep. This file contains the list of vulnerabilities, weaknesses, and insecure API usages that the tool will attempt to match against the APK's call graph. The file must be valid JSON and must conform to one of the two supported formats:
+The absolute or relative file path to the MobSF JSON findings file. This file contains the list of vulnerabilities, weaknesses, and insecure API usages that the tool will attempt to match against the APK's call graph. The file must be valid JSON containing `code_analysis` and/or `android_api` top-level keys, where each sub-key represents a rule with a `severity`, `metadata`, and `files` block.
 
-- **MobSF format:** A JSON object containing `code_analysis` and/or `android_api` top-level keys, where each sub-key represents a rule with a `severity`, `metadata`, and `files` array.
-- **Semgrep format:** A JSON object containing a `results` top-level array, where each element represents a finding with `check_id`, `path`, and `extra` fields.
-
-If the file is empty, malformed, or does not match either format, the tool will exit with an error.
+If the file is empty, malformed, or does not match the expected MobSF format, the tool will exit with an error.
 
 This flag is not required when `--mobsf-url` is used, because the tool fetches the findings directly from MobSF. If both `--findings` and `--mobsf-url` are provided, `--mobsf-url` takes precedence and `--findings` is ignored.
 
 Example:
 ```
 --findings ./scans/mobsf_report_2026-03-23.json
-```
-
-#### `--source` (optional)
-
-Explicitly specifies the format of the findings file. Accepted values are `mobsf` or `semgrep`. When this flag is omitted, the tool inspects the JSON structure and auto-detects the format:
-
-- If the top-level object contains a `code_analysis` or `android_api` key, it is treated as MobSF.
-- If the top-level object contains a `results` key, it is treated as Semgrep.
-
-Use this flag when auto-detection fails (for example, if a custom post-processing step has altered the JSON structure) or when you want to guarantee the correct parser is used.
-
-Example:
-```
---source mobsf
---source semgrep
 ```
 
 #### `--output` (optional)
@@ -325,9 +287,6 @@ python reachability.py --apk target.apk --findings mobsf_report.json --output re
 
 # Pre-exported MobSF findings, auto-detected format
 python reachability.py --apk com.banking.app.apk --findings mobsf_report.json
-
-# Semgrep findings, explicit source, deeper traversal (experimental)
-python reachability.py --apk com.banking.app.apk --findings semgrep_findings.json --source semgrep --max-depth 20
 
 # Quick test with included sample findings
 python reachability.py --apk sample.apk --findings sample_mobsf_findings.json --output test_report.md
@@ -463,7 +422,7 @@ The tool tries to match each finding to a call-graph node using progressively lo
 1. Get your APK
       |
       v
-2. Run MobSF or Semgrep to generate findings JSON
+2. Run MobSF to generate findings JSON
       |
       v
 3. Run: python reachability.py --apk target.apk --findings findings.json
@@ -504,23 +463,6 @@ The tool tries to match each finding to a call-graph node using progressively lo
 - Native code loading
 - Reflection usage
 
-### sample_semgrep_findings.json (25 findings) - Experimental
-
-> **This file is a hand-crafted sample built from the documented Semgrep JSON schema.** It has not been validated against an actual Semgrep scan output. The real Semgrep JSON structure may differ in ways that require parser updates (similar to how the MobSF parser had to be rewritten after testing with a real MobSF report). Do not rely on Semgrep findings results until the parser has been tested with a real report.
-
-Each finding includes CWE IDs, OWASP Mobile Top 10 mapping, source line numbers, and code snippets:
-- SSL/TLS: certificate bypass, hostname verifier bypass
-- Cryptography: insecure random, MD5, SHA-1, DES/ECB
-- Secrets: hardcoded API key, hardcoded password
-- Injection: SQL injection via rawQuery, OS command injection via Runtime.exec
-- Logging: auth token in logs, credit card in logs
-- Storage: SharedPreferences, external storage, world-readable files
-- WebView: JavaScript interface, file access
-- Intents: implicit intent, mutable PendingIntent, unprotected broadcast
-- Components: path traversal in ContentProvider, unvalidated deep links, fragment injection
-- UI: tapjacking
-- Dynamic loading: DexClassLoader
-
 ---
 
 ## Troubleshooting
@@ -528,7 +470,7 @@ Each finding includes CWE IDs, OWASP Mobile Top 10 mapping, source line numbers,
 | Problem | Likely Cause | Fix |
 |---|---|---|
 | `Failed to parse APK` | Corrupt or non-standard APK | Verify the APK opens in other tools (e.g. apktool) |
-| `Cannot determine findings format` | Unknown JSON structure | Add `--source mobsf` or `--source semgrep` explicitly |
+| `Cannot determine findings format` | Unknown JSON structure | Ensure the JSON contains `code_analysis` or `android_api` keys (MobSF format) |
 | All findings are UNRESOLVED | Obfuscated APK or class name mismatch | Run with `--debug` to see what the tool searched for vs. what exists in the call graph |
 | All findings are NOT REACHABLE | Depth limit too low, or entry points not resolved | Run with `--debug` and check the diagnostic output (see below) |
 | Report says "Reachable Beyond Depth Limit: N" | `--max-depth` is too low for this APK | Re-run with `--max-depth 25` or `--max-depth 30` |

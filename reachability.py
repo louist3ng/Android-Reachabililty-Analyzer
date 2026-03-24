@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Android Reachability Analyzer - POC
-Determines whether known vulnerabilities (from MobSF or Semgrep) can be reached
+Determines whether known vulnerabilities (from MobSF) can be reached
 from valid Android entry points using Androguard's call graph.
 """
 
@@ -538,12 +538,10 @@ def _has_intent_filter(apk, comp_name, comp_type):
 # ---------------------------------------------------------------------------
 
 def detect_source(findings_data):
-    """Auto-detect whether findings come from MobSF or Semgrep."""
+    """Auto-detect whether findings come from MobSF."""
     if isinstance(findings_data, dict):
         if "code_analysis" in findings_data or "android_api" in findings_data:
             return "mobsf"
-        if "results" in findings_data:
-            return "semgrep"
     return None
 
 def parse_findings(filepath, source_hint=None):
@@ -565,10 +563,9 @@ def parse_findings_from_data(data, source_hint=None):
     source = source_hint or detect_source(data)
     if source == "mobsf":
         return _parse_mobsf(data), source
-    elif source == "semgrep":
-        return _parse_semgrep(data), source
     else:
-        error_exit("Cannot determine findings format. Use --source mobsf|semgrep.")
+        error_exit("Cannot determine findings format. Ensure the JSON contains "
+                   "code_analysis or android_api keys (MobSF format).")
 
 
 def _parse_mobsf(data):
@@ -674,26 +671,6 @@ def _parse_mobsf(data):
     return findings
 
 
-def _parse_semgrep(data):
-    findings = []
-    for result in data.get("results", []):
-        extra = result.get("extra", {})
-        meta = extra.get("metadata", {})
-        path = result.get("path", "")
-        raw_class = _path_to_class(path)
-        raw_method = _extract_method_from_lines(extra.get("lines", ""))
-
-        findings.append({
-            "title": meta.get("message", result.get("check_id", "unknown")),
-            "severity": _normalise_severity(meta.get("severity", extra.get("severity", "info"))),
-            "sink_signature": "",
-            "raw_class": raw_class,
-            "raw_method": raw_method,
-            "source_file": path,
-        })
-    return findings
-
-
 def _normalise_severity(s):
     s = str(s).lower().strip()
     # MobSF uses "good" for positive/secure findings — map to Info
@@ -715,13 +692,6 @@ def _path_to_class(path):
     path = re.sub(r"\.(java|kt|smali)$", "", path)
     return path.replace("/", ".")
 
-
-def _extract_method_from_lines(lines_str):
-    """Best-effort extraction of a method name from a code snippet."""
-    if not lines_str:
-        return ""
-    m = re.search(r"(?:void|int|String|boolean|Object|long|byte|char|short|float|double|\w+)\s+(\w+)\s*\(", lines_str)
-    return m.group(1) if m else ""
 
 # ---------------------------------------------------------------------------
 # Sink matching - try to match each finding to a call-graph node
@@ -1079,10 +1049,8 @@ def main():
     )
     parser.add_argument("--apk", required=True, help="Path to the APK file")
     parser.add_argument("--findings", default=None,
-                        help="Path to findings JSON (MobSF or Semgrep). "
+                        help="Path to MobSF findings JSON. "
                              "Not required when using --mobsf-url to auto-scan.")
-    parser.add_argument("--source", choices=["mobsf", "semgrep"], default=None,
-                        help="Findings format (auto-detected if omitted)")
     parser.add_argument("--output", default="report.md", help="Output Markdown report path")
     parser.add_argument("--max-depth", type=int, default=15,
                         help="Maximum BFS traversal depth (default: 15)")
@@ -1118,15 +1086,14 @@ def main():
         findings_data = mobsf_auto_scan(
             args.mobsf_url, args.mobsf_key, args.apk, args.save_findings
         )
-        # Force source to mobsf since that's what we just fetched
-        args.source = "mobsf"
+        # Source is always mobsf
     elif args.findings:
         if not os.path.isfile(args.findings):
             error_exit(f"Findings file not found: {args.findings}")
     else:
         error_exit("Either --findings or --mobsf-url is required. "
-                   "Provide a findings JSON file, or use --mobsf-url and --mobsf-key "
-                   "to auto-scan the APK with MobSF.")
+                   "Provide a MobSF findings JSON file, or use --mobsf-url and "
+                   "--mobsf-key to auto-scan the APK with MobSF.")
 
     # Step 2 - Parse APK & build call graph
     apk, dalvik, analysis, cg = build_call_graph(args.apk)
@@ -1157,10 +1124,10 @@ def main():
     # Step 4 - Parse findings & match sinks
     if findings_data is not None:
         # Auto-scanned from MobSF: data already in memory
-        findings, source = parse_findings_from_data(findings_data, args.source)
+        findings, source = parse_findings_from_data(findings_data, "mobsf")
     else:
         # Loaded from file
-        findings, source = parse_findings(args.findings, args.source)
+        findings, source = parse_findings(args.findings, "mobsf")
     info(f"Parsed {len(findings)} findings from {source}")
     findings = match_sinks(findings, cg, node_by_norm)
 
