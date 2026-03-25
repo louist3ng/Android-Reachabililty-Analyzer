@@ -56,7 +56,7 @@ def error_exit(msg):
 MOBSF_POLL_INTERVAL = 5     # seconds between scan-status checks
 MOBSF_POLL_TIMEOUT  = 300   # max seconds to wait for scan completion
 
-def _mobsf_api(url, api_key, endpoint, data=None, files=None):
+def _mobsf_api(url, api_key, endpoint, data=None, files=None, timeout=60):
     """
     Make a POST request to a MobSF REST API endpoint.
     Returns the parsed JSON response.
@@ -113,7 +113,7 @@ def _mobsf_api(url, api_key, endpoint, data=None, files=None):
     req = urllib_request.Request(full_url, data=body, headers=headers, method="POST")
 
     try:
-        with urllib_request.urlopen(req, timeout=60) as resp:
+        with urllib_request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except HTTPError as e:
         error_body = e.read().decode("utf-8", errors="replace")
@@ -149,7 +149,8 @@ def mobsf_scan(url, api_key, file_hash, apk_path):
     result = _mobsf_api(url, api_key, "/api/v1/scan",
                         data={"hash": file_hash,
                               "scan_type": "apk",
-                              "file_name": filename})
+                              "file_name": filename},
+                        timeout=MOBSF_POLL_TIMEOUT)
 
     # MobSF v4 returns the full report JSON directly from /api/v1/scan
     # when the scan completes synchronously (which it usually does).
