@@ -149,9 +149,6 @@ Only the `code_analysis` section is parsed. The `android_api` section (informati
 | `samplereport.md` | Sample output report (pre-generated for reference) |
 | `.gitignore` | Excludes APKs, debug logs, generated reports, and session data |
 
-**Not tracked in repo (obtain separately):**
-- `reachability-apk-v2.apk` — Test APK with intentional vulnerabilities and dead code (`com.test.reachability` package)
-
 ## Dynamic Analysis (Optional)
 
 The static call graph can be enriched with runtime method traces captured via [Frida](https://frida.re/) instrumentation. This closes gaps caused by reflection, dynamic dispatch, unrecognised callbacks, and coroutines — edges that are invisible to static analysis.
@@ -221,15 +218,6 @@ python dynamic_analysis.py auto --apk target.apk --findings mobsf_report.json --
 All flags from the base tool (`--apk`, `--findings`, `--mobsf-url`, `--mobsf-key`, `--max-depth`, `--debug`, `--output`) are also accepted by the `enrich` and `auto` commands.
 
 The dynamic analysis module (`dynamic_analysis.py`) is fully self-contained. Removing it has no effect on the base tool.
-
-## Limitations
-
-- **No taint tracking** — checks reachability, not data flow
-- **Obfuscated APKs** — ProGuard/R8 reduces match rates
-- **Reflection / JNI** — paths through reflection may be incomplete (dynamic analysis mitigates this)
-- **Single APK only** — split APKs and app bundles not supported
-- **code_analysis only** — `android_api` and `manifest_analysis` findings are not analysed
-- **Dynamic analysis requires a device** — Frida tracing needs an emulator or rooted device with frida-server
 
 ## Tech Stack
 
