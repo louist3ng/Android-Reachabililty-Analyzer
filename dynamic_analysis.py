@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """
-Dynamic Analysis Module — Runtime Call Graph Enrichment
+Dynamic Analysis Module — Runtime Call Graph Enrichment & Validation
 
 Complements the static reachability analyzer by capturing actual method calls
-at runtime via Frida instrumentation.  The runtime trace is merged into the
-static call graph before BFS traversal, closing gaps caused by reflection,
-dynamic dispatch, unrecognised callbacks, and coroutines.
+at runtime via Frida instrumentation.  The runtime trace is used to:
+  1. Enrich the static call graph with edges invisible to static analysis
+  2. Cross-validate static results against dynamic observations
+
+Cross-validation produces five labelled verdicts:
+  - REACHABLE — Static + Dynamic  (both agree; highest confidence)
+  - REACHABLE — Static Only       (CFG path exists; not exercised at runtime)
+  - REACHABLE — Dynamic Only      (exercised at runtime; no static CFG path)
+  - NOT REACHABLE                 (neither found a path)
+  - UNRESOLVED                    (sink unmatched in call graph)
 
 This module is self-contained.  Deleting it has zero effect on reachability.py.
 
@@ -22,7 +29,7 @@ Usage:
                                      --output trace.json \
                                      --duration 30
 
-    # Step 2 — Run the full enriched reachability pipeline
+    # Step 2 — Run cross-validated reachability analysis
     python dynamic_analysis.py enrich --apk target.apk \
                                       --findings mobsf_report.json \
                                       --trace trace.json \
@@ -475,20 +482,427 @@ def _find_node(partial_label, node_by_norm):
 
 
 # ---------------------------------------------------------------------------
-# Enriched reachability pipeline — wraps reachability.py
+# Dynamic observation index
+#
+# Builds a lookup of which methods were observed at runtime from the trace.
+# Used to cross-reference against static BFS results.
+# ---------------------------------------------------------------------------
+
+def _build_dynamic_sink_index(trace):
+    """
+    Build a set of all methods observed as callees in the runtime trace,
+    plus a mapping from callee -> list of callers (for evidence reporting).
+
+    Returns:
+        observed_methods: set of callee labels (e.g. "Lcom/test/Foo;->bar")
+        callee_to_callers: dict mapping callee label -> list of caller labels
+    """
+    observed_methods = set()
+    callee_to_callers = {}
+
+    for edge in trace.get("edges", []):
+        callee = edge["callee"]
+        caller = edge["caller"]
+        observed_methods.add(callee)
+        callee_to_callers.setdefault(callee, []).append(caller)
+
+    return observed_methods, callee_to_callers
+
+
+def _is_dynamically_observed(finding, observed_methods):
+    """
+    Check whether a finding's sink was observed at runtime.
+
+    Matching strategy (mirrors _find_node logic):
+      1. Exact match of matched_label against observed methods
+      2. Partial match: class+method prefix from the finding against observed callees
+      3. Class-only match as fallback
+    """
+    matched_label = finding.get("matched_label", "")
+    raw_class = finding.get("raw_class", "")
+    raw_method = finding.get("raw_method", "")
+
+    # Strategy 1: exact match on the full normalised label
+    if matched_label:
+        for obs in observed_methods:
+            if matched_label.startswith(obs) or obs.startswith(matched_label):
+                return True
+            # Check if obs + "(" is a prefix of matched_label (trace lacks param sig)
+            if (obs + "(") in matched_label:
+                return True
+
+    # Strategy 2: class + method from the finding against trace callees
+    if raw_class and raw_method:
+        dalvik_cls = "L" + raw_class.replace(".", "/") + ";"
+        search_key = dalvik_cls + "->" + raw_method
+        for obs in observed_methods:
+            if search_key in obs or obs.startswith(search_key):
+                return True
+
+    # Strategy 3: class-only (any method in that class was called)
+    if raw_class:
+        dalvik_cls = "L" + raw_class.replace(".", "/") + ";"
+        for obs in observed_methods:
+            if dalvik_cls in obs:
+                return True
+
+    return False
+
+
+def _get_dynamic_callers(finding, callee_to_callers):
+    """
+    Return the list of runtime callers for a finding's sink, for evidence.
+    Uses the same fuzzy matching as _is_dynamically_observed.
+    """
+    matched_label = finding.get("matched_label", "")
+    raw_class = finding.get("raw_class", "")
+    raw_method = finding.get("raw_method", "")
+
+    callers = []
+
+    for callee, caller_list in callee_to_callers.items():
+        matched = False
+        if matched_label:
+            if (matched_label.startswith(callee) or callee.startswith(matched_label)
+                    or (callee + "(") in matched_label):
+                matched = True
+        if not matched and raw_class and raw_method:
+            dalvik_cls = "L" + raw_class.replace(".", "/") + ";"
+            search_key = dalvik_cls + "->" + raw_method
+            if search_key in callee or callee.startswith(search_key):
+                matched = True
+        if not matched and raw_class:
+            dalvik_cls = "L" + raw_class.replace(".", "/") + ";"
+            if dalvik_cls in callee:
+                matched = True
+        if matched:
+            callers.extend(caller_list)
+
+    # Deduplicate while preserving order
+    seen = set()
+    unique = []
+    for c in callers:
+        if c not in seen:
+            seen.add(c)
+            unique.append(c)
+    return unique
+
+
+# ---------------------------------------------------------------------------
+# Cross-validation — compare static BFS verdicts with dynamic observations
+# ---------------------------------------------------------------------------
+
+# Validation labels used in the report
+LABEL_CONFIRMED    = "Static + Dynamic"
+LABEL_STATIC_ONLY  = "Static Only"
+LABEL_DYNAMIC_ONLY = "Dynamic Only"
+LABEL_NOT_REACHABLE = None   # no extra qualifier
+LABEL_UNRESOLVED    = None
+
+def cross_validate(findings, observed_methods, callee_to_callers):
+    """
+    Annotate each finding with cross-validation results.
+
+    Reads the static verdict (already set by run_reachability) and the
+    dynamic observation, then sets:
+        f["validation_label"]  — one of the LABEL_* constants above
+        f["dynamic_observed"]  — bool
+        f["dynamic_callers"]   — list of runtime caller labels (for evidence)
+        f["agreement"]         — "agreement", "contradiction", or "n/a"
+    """
+    for f in findings:
+        dyn_observed = _is_dynamically_observed(f, observed_methods)
+        dyn_callers = _get_dynamic_callers(f, callee_to_callers) if dyn_observed else []
+
+        f["dynamic_observed"] = dyn_observed
+        f["dynamic_callers"] = dyn_callers
+
+        static_verdict = f["verdict"]
+
+        if static_verdict == "UNRESOLVED":
+            f["validation_label"] = LABEL_UNRESOLVED
+            f["agreement"] = "n/a"
+
+        elif static_verdict == "REACHABLE" and dyn_observed:
+            # Agreement: both static and dynamic confirm reachability
+            f["validation_label"] = LABEL_CONFIRMED
+            f["agreement"] = "agreement"
+
+        elif static_verdict == "REACHABLE" and not dyn_observed:
+            # Static says reachable, dynamic did not observe
+            f["validation_label"] = LABEL_STATIC_ONLY
+            f["agreement"] = "agreement"  # not a contradiction — trace is incomplete
+
+        elif static_verdict == "NOT REACHABLE" and dyn_observed:
+            # Contradiction: static says unreachable, but runtime observed it
+            f["verdict"] = "REACHABLE"
+            f["validation_label"] = LABEL_DYNAMIC_ONLY
+            f["agreement"] = "contradiction"
+
+        elif static_verdict == "NOT REACHABLE" and not dyn_observed:
+            # Both agree: not reachable
+            f["validation_label"] = LABEL_NOT_REACHABLE
+            f["agreement"] = "agreement"
+
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# Validated report generation
+# ---------------------------------------------------------------------------
+
+def _pretty_label(dalvik_label):
+    """Convert 'Lcom/example/Class;->method(...)...' -> 'Class.method'."""
+    m = re.match(r"L[\w/]*?(\w+);->(\w+)", dalvik_label)
+    return f"{m.group(1)}.{m.group(2)}" if m else dalvik_label
+
+
+def generate_validated_report(findings, apk_path, source_name, max_depth,
+                              output_path, trace_meta):
+    """
+    Generate a Markdown report with cross-validation labels on every finding.
+
+    Each finding is clearly tagged with its analysis source so a reader can
+    tell at a glance which method produced or confirmed the result.
+    """
+    # Categorise findings by validation label
+    confirmed = [f for f in findings
+                 if f.get("validation_label") == LABEL_CONFIRMED]
+    static_only = [f for f in findings
+                   if f.get("validation_label") == LABEL_STATIC_ONLY]
+    dynamic_only = [f for f in findings
+                    if f.get("validation_label") == LABEL_DYNAMIC_ONLY]
+    not_reachable = [f for f in findings
+                     if f["verdict"] == "NOT REACHABLE"]
+    unresolved = [f for f in findings
+                  if f["verdict"] == "UNRESOLVED"]
+    fp_flagged = [f for f in findings
+                  if f["verdict"] == "REACHABLE" and f.get("fp_flags")]
+    beyond_depth = [f for f in not_reachable if f.get("unbounded_reachable")]
+    contradictions = [f for f in findings if f.get("agreement") == "contradiction"]
+
+    total_reachable = len(confirmed) + len(static_only) + len(dynamic_only)
+
+    lines = []
+    lines.append("# Reachability Analysis Report (Static + Dynamic Validation)\n")
+    lines.append(f"**APK:** {os.path.basename(apk_path)}  ")
+    lines.append(f"**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  ")
+    lines.append(f"**Findings Source:** {source_name}  ")
+    lines.append(f"**Analysis Mode:** Cross-validated (static CFG + runtime trace)  ")
+    lines.append(
+        f"**Runtime Trace:** {trace_meta.get('unique_edges', 0)} unique edges, "
+        f"{trace_meta.get('duration_seconds', '?')}s duration, "
+        f"{trace_meta.get('monkey_events', '?')} monkey events  "
+    )
+    lines.append(
+        f"**Total Findings:** {len(findings)} | "
+        f"Reachable: {total_reachable} "
+        f"(Confirmed: {len(confirmed)}, "
+        f"Static Only: {len(static_only)}, "
+        f"Dynamic Only: {len(dynamic_only)}) | "
+        f"Not Reachable: {len(not_reachable)} | "
+        f"Unresolved: {len(unresolved)}  "
+    )
+    if contradictions:
+        lines.append(
+            f"**Contradictions Found:** {len(contradictions)} "
+            f"(static/dynamic disagreement — see Dynamic Only findings)  "
+        )
+    lines.append(f"**Reachable with FP Risk Flags:** {len(fp_flagged)}  ")
+    if beyond_depth:
+        lines.append(
+            f"**Reachable Beyond Depth Limit ({max_depth}):** {len(beyond_depth)} "
+            f"— consider re-running with a higher --max-depth  "
+        )
+    lines.append("")
+
+    # Validation legend
+    lines.append("### Analysis Source Labels\n")
+    lines.append("| Label | Meaning |")
+    lines.append("|---|---|")
+    lines.append("| **Static + Dynamic** | Both static CFG and runtime trace confirm reachability (highest confidence) |")
+    lines.append("| **Static Only** | Static CFG path exists; sink not exercised during runtime trace |")
+    lines.append("| **Dynamic Only** | Sink exercised at runtime; no static CFG path found (contradiction) |")
+    lines.append("| **NOT REACHABLE** | Neither static nor dynamic analysis found a path |")
+    lines.append("| **UNRESOLVED** | Sink could not be matched to any call-graph node |")
+    lines.append("")
+    lines.append("---\n")
+
+    severity_order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Warning": 4, "Info": 5}
+
+    # --- Section 1: Confirmed (Static + Dynamic) ---
+    if confirmed:
+        lines.append("# Confirmed Reachable (Static + Dynamic)\n")
+        lines.append("*Both static call-graph analysis and runtime tracing agree these sinks are reachable.*\n")
+        for f in sorted(confirmed, key=lambda x: severity_order.get(x["severity"], 9)):
+            _write_reachable_finding(lines, f, max_depth)
+        lines.append("")
+
+    # --- Section 2: Static Only ---
+    if static_only:
+        lines.append("# Reachable — Static Only\n")
+        lines.append("*Static CFG found a path, but the sink was not exercised during the runtime trace. "
+                      "This may indicate the path requires specific user interaction not covered by "
+                      "automated exercising, or may warrant further review.*\n")
+        for f in sorted(static_only, key=lambda x: severity_order.get(x["severity"], 9)):
+            _write_reachable_finding(lines, f, max_depth)
+        lines.append("")
+
+    # --- Section 3: Dynamic Only (contradictions) ---
+    if dynamic_only:
+        lines.append("# Reachable — Dynamic Only (Contradictions)\n")
+        lines.append("*The static call graph has no path to these sinks, but runtime tracing confirmed "
+                      "they were executed. This typically indicates reflection, dynamic dispatch, "
+                      "or callback patterns that static analysis cannot resolve.*\n")
+        for f in sorted(dynamic_only, key=lambda x: severity_order.get(x["severity"], 9)):
+            _write_dynamic_only_finding(lines, f)
+        lines.append("")
+
+    # --- Section 4: Not Reachable ---
+    if not_reachable:
+        lines.append("# Not Reachable\n")
+        lines.append("*Neither static CFG analysis nor runtime tracing found a path to these sinks.*\n")
+        for f in sorted(not_reachable, key=lambda x: severity_order.get(x["severity"], 9)):
+            _write_not_reachable_finding(lines, f, max_depth)
+        lines.append("")
+
+    # --- Section 5: Unresolved ---
+    if unresolved:
+        lines.append("# Unresolved\n")
+        lines.append("*These findings could not be matched to any call-graph node.*\n")
+        for f in unresolved:
+            _write_unresolved_finding(lines, f)
+        lines.append("")
+
+    report = "\n".join(lines)
+    with open(output_path, "w", encoding="utf-8") as out:
+        out.write(report)
+    _info(f"Report written to {output_path}")
+
+
+def _write_reachable_finding(lines, f, max_depth):
+    """Write a REACHABLE finding (Confirmed or Static Only) to the report."""
+    label = f.get("validation_label", "")
+    lines.append(f"## [REACHABLE — {label}] {f['title']} - {f['severity']}\n")
+    lines.append(f"**Analysis Source:** {_analysis_source_explanation(label)}  ")
+    lines.append(f"**Sink:** `{f['matched_label']}`  ")
+    if f.get("best_entry"):
+        lines.append(f"**Entry Point:** `{f['best_entry']['label']}`  ")
+    lines.append(f"**Match Confidence:** {f['confidence']}  ")
+    if f.get("path"):
+        chain = " -> ".join(_pretty_label(n) for n in f["path"])
+        lines.append(f"**Call Chain (static):** `{chain}`  ")
+        lines.append(f"**Path Length:** {len(f['path'])} hops  ")
+    if f.get("dynamic_observed"):
+        callers = f.get("dynamic_callers", [])
+        if callers:
+            caller_str = ", ".join(_pretty_label(c) for c in callers[:5])
+            if len(callers) > 5:
+                caller_str += f" (+{len(callers) - 5} more)"
+            lines.append(f"**Dynamic Evidence:** Sink observed at runtime (callers: {caller_str})  ")
+        else:
+            lines.append("**Dynamic Evidence:** Sink observed at runtime  ")
+    elif label == LABEL_STATIC_ONLY:
+        lines.append("**Dynamic Evidence:** Sink was NOT observed during runtime trace  ")
+    for flag in f.get("fp_flags", []):
+        lines.append(f"  **FP Risk:** {flag}  ")
+    lines.append("\n---\n")
+
+
+def _write_dynamic_only_finding(lines, f):
+    """Write a DYNAMIC ONLY finding (contradiction) to the report."""
+    lines.append(f"## [REACHABLE — Dynamic Only] {f['title']} - {f['severity']}\n")
+    lines.append(f"**Analysis Source:** {_analysis_source_explanation(LABEL_DYNAMIC_ONLY)}  ")
+    lines.append(f"**Sink:** `{f.get('matched_label', f.get('raw_class', '?'))}`  ")
+    lines.append(f"**Match Confidence:** {f.get('confidence', 'N/A')}  ")
+    callers = f.get("dynamic_callers", [])
+    if callers:
+        caller_str = ", ".join(_pretty_label(c) for c in callers[:5])
+        if len(callers) > 5:
+            caller_str += f" (+{len(callers) - 5} more)"
+        lines.append(f"**Dynamic Evidence:** Sink observed at runtime (callers: {caller_str})  ")
+    else:
+        lines.append("**Dynamic Evidence:** Sink observed at runtime  ")
+    lines.append(
+        f"**Static Analysis:** No path found from any entry point in the static CFG  "
+    )
+    lines.append(
+        "**Explanation:** This is a static/dynamic contradiction. The static call graph "
+        "has no path to this sink, but runtime tracing confirmed it was executed. "
+        "Common causes: reflection, dynamic class loading, unrecognised callback patterns, "
+        "or coroutine dispatch that static analysis cannot model.  "
+    )
+    for flag in f.get("fp_flags", []):
+        lines.append(f"  **FP Risk:** {flag}  ")
+    lines.append("\n---\n")
+
+
+def _write_not_reachable_finding(lines, f, max_depth):
+    """Write a NOT REACHABLE finding to the report."""
+    lines.append(f"## [NOT REACHABLE] {f['title']} - {f['severity']}\n")
+    lines.append("**Analysis Source:** Neither static CFG nor runtime trace found a path  ")
+    lines.append(f"**Sink:** `{f['matched_label']}`  ")
+    lines.append(f"**Entry Point(s) Checked:** {f['entry_points_checked']}  ")
+    if f.get("unbounded_reachable"):
+        lines.append(
+            f"**Reason:** Path exists in static CFG but exceeds the {max_depth}-hop depth limit. "
+            f"Re-run with a higher `--max-depth` value to capture this path.  "
+        )
+    else:
+        lines.append(
+            f"**Reason:** No path found from any entry point "
+            f"(static depth limit: {max_depth}, runtime: not observed)  "
+        )
+    lines.append(f"**Match Confidence:** {f['confidence']}  ")
+    lines.append("\n---\n")
+
+
+def _write_unresolved_finding(lines, f):
+    """Write an UNRESOLVED finding to the report."""
+    lines.append(f"## [UNRESOLVED] {f['title']} - {f['severity']}\n")
+    lines.append("**Analysis Source:** Sink unmatched — neither analysis method applicable  ")
+    raw = f["raw_class"]
+    if f.get("raw_method"):
+        raw += f".{f['raw_method']}"
+    lines.append(f"**Raw Finding:** `{raw}`  ")
+    lines.append("**Reason:** Sink method could not be matched to any call graph node  ")
+    lines.append(f"**Match Confidence:** {f['confidence']}  ")
+    if f.get("dynamic_observed"):
+        lines.append("**Note:** A method matching this finding WAS observed at runtime, "
+                      "but could not be mapped to the static call graph for cross-validation.  ")
+    lines.append("\n---\n")
+
+
+def _analysis_source_explanation(label):
+    """Return a human-readable explanation for the analysis source label."""
+    if label == LABEL_CONFIRMED:
+        return "Confirmed by both static CFG analysis and runtime trace"
+    elif label == LABEL_STATIC_ONLY:
+        return "Static CFG path found; sink not exercised during runtime trace"
+    elif label == LABEL_DYNAMIC_ONLY:
+        return ("Sink exercised at runtime; no static CFG path found "
+                "(static/dynamic contradiction)")
+    return "N/A"
+
+
+# ---------------------------------------------------------------------------
+# Enriched + validated reachability pipeline — wraps reachability.py
 # ---------------------------------------------------------------------------
 
 def run_enriched_pipeline(apk_path, findings_path, trace_path, output_path,
                           max_depth=15, mobsf_url=None, mobsf_key=None,
                           save_findings=None, debug=False):
     """
-    Run the full reachability pipeline with runtime trace enrichment.
+    Run the full reachability pipeline with cross-validation.
 
-    This imports and reuses functions from reachability.py, injecting
-    runtime edges into the call graph after static construction but
-    before BFS traversal.
+    Two-pass approach:
+      1. Run BFS on the static-only call graph → static verdicts
+      2. Check which sinks were observed in the runtime trace → dynamic evidence
+      3. Cross-reference static verdicts with dynamic observations
+      4. For Dynamic Only findings: enrich graph with runtime edges and re-run
+         BFS to attempt path recovery
+      5. Generate a validated report with clear analysis-source labels
     """
-    # Import the core module
     try:
         import reachability as ra
     except ImportError:
@@ -497,7 +911,6 @@ def run_enriched_pipeline(apk_path, findings_path, trace_path, output_path,
             "or on PYTHONPATH."
         )
 
-    # Propagate debug flag
     ra.DEBUG = debug
     global DEBUG
     DEBUG = debug
@@ -517,23 +930,18 @@ def run_enriched_pipeline(apk_path, findings_path, trace_path, output_path,
 
     # --- Stage 2: Build static call graph ---
     apk, dalvik, analysis, cg = ra.build_call_graph(apk_path)
-
-    # Build normalised node index
     node_by_norm, node_obj_to_norm = ra._build_node_index(cg)
-    _debug(f"Static graph: {cg.number_of_nodes()} nodes, {cg.number_of_edges()} edges")
-
-    # Inject synthetic callback edges (same as core pipeline)
     ra._inject_callback_edges(cg, node_by_norm)
-
-    # --- Stage 2.5: RUNTIME ENRICHMENT (the new bit) ---
-    edges_added = enrich_call_graph(cg, node_by_norm, trace)
+    static_nodes = cg.number_of_nodes()
+    static_edges = cg.number_of_edges()
+    _info(f"Static graph: {static_nodes} nodes, {static_edges} edges")
 
     # --- Stage 3: Entry points ---
     entry_points = ra.get_entry_points(apk, cg, node_by_norm)
     if not entry_points:
         _warn("No entry points resolved — all findings will be NOT REACHABLE")
 
-    # --- Stage 4: Parse findings & match sinks ---
+    # --- Stage 4: Parse findings & match sinks (on static graph) ---
     if findings_data is not None:
         findings, source = ra.parse_findings_from_data(findings_data, "mobsf")
     else:
@@ -543,35 +951,73 @@ def run_enriched_pipeline(apk_path, findings_path, trace_path, output_path,
 
     ra.info(f"Parsed {len(findings)} findings from {source}")
     findings = ra.match_sinks(findings, cg, node_by_norm)
-
     matched = sum(1 for f in findings if f["matched_node"] is not None)
     ra.info(f"Sink matching: {matched}/{len(findings)} findings matched to call graph nodes")
 
-    # --- Stage 5: BFS reachability ---
-    ra.info(f"Running reachability analysis (max depth = {max_depth})...")
+    # --- Stage 5: STATIC-ONLY BFS ---
+    ra.info(f"Running STATIC reachability analysis (max depth = {max_depth})...")
     findings = ra.run_reachability(cg, entry_points, findings, max_depth)
 
-    # --- Stage 6: FP risk checks ---
+    # --- Stage 6: FP risk checks (on static results) ---
     findings = ra.fp_risk_checks(findings, apk)
 
-    # --- Stage 7: Generate report ---
-    # Append enrichment metadata to the source name
-    source_label = f"{source} + dynamic trace ({trace.get('unique_edges', 0)} runtime edges)"
-    ra.generate_report(findings, apk_path, source_label, max_depth, output_path)
+    # --- Stage 7: Build dynamic observation index ---
+    observed_methods, callee_to_callers = _build_dynamic_sink_index(trace)
+    _info(f"Dynamic trace: {len(observed_methods)} unique methods observed at runtime")
 
-    # Summary
-    verdicts = {"REACHABLE": 0, "NOT REACHABLE": 0, "UNRESOLVED": 0}
-    for f in findings:
-        verdicts[f["verdict"]] += 1
-    beyond = sum(1 for f in findings
-                 if f.get("unbounded_reachable") and f["verdict"] == "NOT REACHABLE")
-    ra.info(f"Done (enriched) — REACHABLE: {verdicts['REACHABLE']}, "
-            f"NOT REACHABLE: {verdicts['NOT REACHABLE']}, "
-            f"UNRESOLVED: {verdicts['UNRESOLVED']}")
+    # --- Stage 8: Cross-validate static vs dynamic ---
+    findings = cross_validate(findings, observed_methods, callee_to_callers)
+
+    # --- Stage 9: For DYNAMIC ONLY findings, enrich graph and attempt path recovery ---
+    dynamic_only = [f for f in findings if f.get("validation_label") == LABEL_DYNAMIC_ONLY]
+    if dynamic_only:
+        _info(f"Enriching graph with runtime edges for {len(dynamic_only)} Dynamic Only findings...")
+        edges_added = enrich_call_graph(cg, node_by_norm, trace)
+
+        # Re-match sinks that might now be findable in the enriched graph
+        for f in dynamic_only:
+            if f["matched_node"] is None:
+                ra.match_sinks([f], cg, node_by_norm)
+
+        # Re-run BFS on enriched graph for dynamic-only findings
+        for f in dynamic_only:
+            if f["matched_node"] is not None:
+                for ep in entry_points:
+                    path = ra.bfs_reachability(cg, ep["node"], f["matched_node"], max_depth)
+                    if path:
+                        f["path"] = path
+                        f["best_entry"] = ep
+                        break
+    else:
+        edges_added = 0
+
+    # --- Stage 10: Generate validated report ---
+    source_label = f"{source} + dynamic trace ({trace.get('unique_edges', 0)} runtime edges)"
+    generate_validated_report(
+        findings, apk_path, source_label, max_depth, output_path, trace
+    )
+
+    # Summary to stderr
+    counts = {
+        "Confirmed": sum(1 for f in findings if f.get("validation_label") == LABEL_CONFIRMED),
+        "Static Only": sum(1 for f in findings if f.get("validation_label") == LABEL_STATIC_ONLY),
+        "Dynamic Only": sum(1 for f in findings if f.get("validation_label") == LABEL_DYNAMIC_ONLY),
+        "Not Reachable": sum(1 for f in findings if f["verdict"] == "NOT REACHABLE"),
+        "Unresolved": sum(1 for f in findings if f["verdict"] == "UNRESOLVED"),
+    }
+    contradictions = counts["Dynamic Only"]
+    ra.info(
+        f"Done (cross-validated) — "
+        f"Confirmed: {counts['Confirmed']}, "
+        f"Static Only: {counts['Static Only']}, "
+        f"Dynamic Only: {counts['Dynamic Only']}, "
+        f"Not Reachable: {counts['Not Reachable']}, "
+        f"Unresolved: {counts['Unresolved']}"
+    )
+    if contradictions:
+        ra.info(f"  {contradictions} contradiction(s) found — sinks exercised at runtime but not in static CFG")
     if edges_added:
-        ra.info(f"  Runtime enrichment contributed {edges_added} additional edges to the call graph")
-    if beyond:
-        ra.info(f"  {beyond} finding(s) ARE reachable beyond depth {max_depth} — increase --max-depth to capture them")
+        ra.info(f"  Runtime enrichment added {edges_added} edges for Dynamic Only path recovery")
 
     return findings
 
@@ -585,7 +1031,7 @@ def run_auto(apk_path, findings_path, package, output_path,
              device=None, mobsf_url=None, mobsf_key=None,
              save_findings=None, debug=False):
     """
-    Fully automated: capture a runtime trace, then run the enriched pipeline.
+    Fully automated: capture a runtime trace, then run the cross-validated pipeline.
     """
     trace_path = output_path.rsplit(".", 1)[0] + "_trace.json"
 
@@ -598,7 +1044,7 @@ def run_auto(apk_path, findings_path, package, output_path,
         monkey_events=monkey_events,
     )
 
-    _info("=== Phase 2: Enriched Reachability Analysis ===")
+    _info("=== Phase 2: Cross-Validated Reachability Analysis ===")
     return run_enriched_pipeline(
         apk_path=apk_path,
         findings_path=findings_path,
@@ -621,13 +1067,13 @@ def main():
 
     parser = argparse.ArgumentParser(
         description="Dynamic Analysis Module — runtime call graph enrichment "
-                    "for the Android Reachability Analyzer.",
+                    "and cross-validation for the Android Reachability Analyzer.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 commands:
   trace    Capture a runtime call trace via Frida instrumentation
-  enrich   Run the reachability pipeline with runtime trace enrichment
-  auto     Capture trace + run enriched analysis in one shot
+  enrich   Run cross-validated reachability analysis (static + dynamic)
+  auto     Capture trace + cross-validated analysis in one shot
 
 examples:
   python dynamic_analysis.py trace --package com.test.app -o trace.json
@@ -655,7 +1101,7 @@ examples:
 
     # --- enrich ---
     p_enrich = sub.add_parser("enrich",
-                              help="Run reachability analysis with runtime trace enrichment")
+                              help="Run cross-validated reachability analysis (static + dynamic)")
     p_enrich.add_argument("--apk", required=True, help="Path to the APK file")
     p_enrich.add_argument("--findings", default=None,
                           help="Path to MobSF findings JSON")
@@ -673,7 +1119,7 @@ examples:
 
     # --- auto ---
     p_auto = sub.add_parser("auto",
-                            help="Capture trace + enriched analysis in one shot")
+                            help="Capture trace + cross-validated analysis in one shot")
     p_auto.add_argument("--apk", required=True, help="Path to the APK file")
     p_auto.add_argument("--findings", default=None,
                         help="Path to MobSF findings JSON")
