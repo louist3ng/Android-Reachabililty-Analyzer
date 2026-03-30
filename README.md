@@ -12,19 +12,20 @@ Most scanners flag every pattern match as a finding — but if no execution path
   APK file ------>| Androguard|----------->|  (37k+ nodes)    |
                   +-----------+            +--------+---------+
                                                     |
-                  +-----------+                     |
-  MobSF          |  Parser   |---> Sinks           |
-  code_analysis-->| (code     |        |            |
-                  |  analysis)|        v            v
-                  +-----------+  +-----+------+-----+-----+
-        ^                        |     Bounded BFS         |
-        |                        |  Entry Points -> Sinks  |
-  [auto-scan]                    +-----+------+-----------+
-        |                              |      |
-  +-----------+               REACHABLE   NOT REACHABLE
-  | MobSF API |                    |
-  | (optional)|             FP Risk Checks
-  +-----------+                    |
+                  +-----------+            +--------+---------+
+  MobSF          |  Parser   |---> Sinks  | Runtime Trace    |  (optional)
+  code_analysis-->| (code     |        |   | (Frida edges)    |
+                  |  analysis)|        |   +--------+---------+
+                  +-----------+        |            |  merge
+        ^                        +-----+------+-----+-----+
+        |                        |     Bounded BFS         |
+  [auto-scan]                    |  Entry Points -> Sinks  |
+        |                        +-----+------+-----------+
+  +-----------+                        |      |
+  | MobSF API |               REACHABLE   NOT REACHABLE
+  | (optional)|                    |
+  +-----------+             FP Risk Checks
+                                   |
                             Markdown Report
 ```
 
@@ -141,6 +142,7 @@ Only the `code_analysis` section is parsed. The `android_api` section (informati
 | File | Description |
 |---|---|
 | `reachability.py` | Main CLI tool (single file, no framework dependencies) |
+| `dynamic_analysis.py` | Optional dynamic analysis module (Frida-based runtime trace enrichment) |
 | `INSTRUCTIONS.md` | Detailed usage guide with troubleshooting |
 | `CLAUDE.md` | Guidance for Claude Code when working in this repository |
 | `sample_mobsf_findings.json` | Sample MobSF `code_analysis` findings mapped to the test APK |
@@ -150,14 +152,84 @@ Only the `code_analysis` section is parsed. The `android_api` section (informati
 **Not tracked in repo (obtain separately):**
 - `reachability-apk-v2.apk` — Test APK with intentional vulnerabilities and dead code (`com.test.reachability` package)
 
+## Dynamic Analysis (Optional)
+
+The static call graph can be enriched with runtime method traces captured via [Frida](https://frida.re/) instrumentation. This closes gaps caused by reflection, dynamic dispatch, unrecognised callbacks, and coroutines — edges that are invisible to static analysis.
+
+### Prerequisites
+
+```
+pip install frida frida-tools
+```
+
+- Android emulator or rooted device accessible via ADB
+- [frida-server](https://frida.re/docs/android/) running on the device (version must match the `frida` Python package)
+
+### Workflow
+
+```
+                                  +------------------+
+  Device / Emulator               |  Runtime Trace   |
+  (app + Frida + monkey) -------->|  (JSON edges)    |
+                                  +--------+---------+
+                                           |
+          Static Call Graph                |  merge
+          (Androguard)      +--------------+
+               |            |
+               v            v
+          +----+------------+----+
+          |   Enriched Graph     |
+          |   (static + runtime) |
+          +----------+-----------+
+                     |
+                Bounded BFS
+                     |
+              Reachability Report
+```
+
+**Step 1 — Capture a runtime trace** (run once per APK, reuse across analyses):
+
+```bash
+python dynamic_analysis.py trace --package com.test.reachability --output trace.json --duration 30
+```
+
+This spawns the app via Frida, hooks all methods in the target package, runs Android's `monkey` tool for automated UI exercising, and records caller/callee pairs.
+
+**Step 2 — Run enriched analysis:**
+
+```bash
+python dynamic_analysis.py enrich --apk target.apk --findings mobsf_report.json --trace trace.json --output report.md
+```
+
+**Or combine both steps (fully automated):**
+
+```bash
+python dynamic_analysis.py auto --apk target.apk --findings mobsf_report.json --package com.test.reachability --output report.md
+```
+
+### Dynamic Analysis CLI Options
+
+| Flag | Command | Default | Description |
+|---|---|---|---|
+| `--package` | trace, auto | - | Target app package name |
+| `--duration` | trace, auto | `30` | Trace duration in seconds |
+| `--monkey-events` | trace, auto | `2000` | Monkey UI events (0 to disable) |
+| `--device` | trace, auto | first available | ADB device serial |
+| `--trace` | enrich | - | Path to runtime trace JSON |
+| `--extra-prefix` | trace | - | Additional package prefixes to hook (repeatable) |
+
+All flags from the base tool (`--apk`, `--findings`, `--mobsf-url`, `--mobsf-key`, `--max-depth`, `--debug`, `--output`) are also accepted by the `enrich` and `auto` commands.
+
+The dynamic analysis module (`dynamic_analysis.py`) is fully self-contained. Removing it has no effect on the base tool.
+
 ## Limitations
 
-- **Static analysis only** — no runtime behavior or dynamic class loading
 - **No taint tracking** — checks reachability, not data flow
 - **Obfuscated APKs** — ProGuard/R8 reduces match rates
-- **Reflection / JNI** — paths through reflection may be incomplete
+- **Reflection / JNI** — paths through reflection may be incomplete (dynamic analysis mitigates this)
 - **Single APK only** — split APKs and app bundles not supported
 - **code_analysis only** — `android_api` and `manifest_analysis` findings are not analysed
+- **Dynamic analysis requires a device** — Frida tracing needs an emulator or rooted device with frida-server
 
 ## Tech Stack
 
@@ -165,6 +237,7 @@ Only the `code_analysis` section is parsed. The `android_api` section (informati
 - **[Androguard](https://github.com/androguard/androguard)** — APK parsing, DEX bytecode analysis, call graph generation
 - **[NetworkX](https://networkx.org/)** — directed graph traversal (bounded BFS)
 - **[MobSF](https://github.com/MobSF/Mobile-Security-Framework-MobSF)** (optional) — automated vulnerability scanning via REST API
+- **[Frida](https://frida.re/)** (optional) — runtime method tracing for call graph enrichment
 - Standard library: `argparse`, `json`, `re`, `collections.deque`, `urllib`
 
 ## License
