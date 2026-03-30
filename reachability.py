@@ -966,25 +966,46 @@ def _pretty_label(dalvik_label):
     return f"{m.group(1)}.{m.group(2)}" if m else dalvik_label
 
 
-def generate_report(findings, apk_path, source_name, max_depth, output_path):
+def generate_report(findings, apk_path, source_name, max_depth, output_path,
+                    dynamic_trace=None):
     reachable   = [f for f in findings if f["verdict"] == "REACHABLE"]
     unreachable = [f for f in findings if f["verdict"] == "NOT REACHABLE"]
     unresolved  = [f for f in findings if f["verdict"] == "UNRESOLVED"]
     fp_flagged  = [f for f in reachable if f.get("fp_flags")]
     # Count findings that ARE reachable but only beyond the depth limit
     beyond_depth = [f for f in unreachable if f.get("unbounded_reachable")]
+    validated    = [f for f in findings if f.get("validation_label") == "VALIDATED"]
+    contradicted = [f for f in findings if f.get("validation_label") == "CONTRADICTION"]
+    has_dynamic  = dynamic_trace is not None
 
     lines = []
-    lines.append("# Reachability Analysis Report\n")
+    if has_dynamic:
+        lines.append("# Reachability Analysis Report (Static + Dynamic)\n")
+    else:
+        lines.append("# Reachability Analysis Report\n")
     lines.append(f"**APK:** {os.path.basename(apk_path)}  ")
     lines.append(f"**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  ")
     lines.append(f"**Findings Source:** {source_name.capitalize()}  ")
+    if has_dynamic:
+        lines.append(f"**Analysis Mode:** Cross-validated (static CFG + runtime trace)  ")
+        lines.append(
+            f"**Runtime Trace:** {dynamic_trace.get('unique_edges', 0)} unique edges, "
+            f"{dynamic_trace.get('duration_seconds', '?')}s duration, "
+            f"{dynamic_trace.get('monkey_events', '?')} monkey events  "
+        )
+    else:
+        lines.append("**Analysis Mode:** Static CFG only  ")
     lines.append(
         f"**Total Findings:** {len(findings)} | "
         f"Reachable: {len(reachable)} | "
         f"Not Reachable: {len(unreachable)} | "
         f"Unresolved: {len(unresolved)}  "
     )
+    if has_dynamic:
+        lines.append(
+            f"**Validated:** {len(validated)} | "
+            f"**Contradictions:** {len(contradicted)}  "
+        )
     lines.append(f"**Reachable with FP Risk Flags:** {len(fp_flagged)}  ")
     if beyond_depth:
         lines.append(
@@ -992,26 +1013,55 @@ def generate_report(findings, apk_path, source_name, max_depth, output_path):
             f"- consider re-running with a higher --max-depth  "
         )
     lines.append("")
+
+    # Analysis source legend when dynamic analysis is active
+    if has_dynamic:
+        lines.append("### Analysis Source Labels\n")
+        lines.append("| Label | Meaning |")
+        lines.append("|---|---|")
+        lines.append("| **VALIDATED** | Both static CFG and runtime trace confirm reachability |")
+        lines.append("| **CONTRADICTION** | Static and dynamic results disagree — see explanation on each finding |")
+        lines.append("| *(no label)* | Finding assessed by static analysis only (not matched in runtime trace) |")
+        lines.append("")
+
     lines.append("---\n")
 
     severity_order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Warning": 4, "Info": 5}
 
     for f in sorted(reachable, key=lambda x: severity_order.get(x["severity"], 9)):
-        lines.append(f"## [REACHABLE] {f['title']} - {f['severity']}\n")
+        tag = _verdict_tag(f, has_dynamic)
+        lines.append(f"## {tag} {f['title']} - {f['severity']}\n")
+        if has_dynamic:
+            lines.append(f"**Analysis Source:** {_analysis_source_text(f)}  ")
         lines.append(f"**Sink:** `{f['matched_label']}`  ")
-        if f["best_entry"]:
+        if f.get("best_entry"):
             lines.append(f"**Entry Point:** `{f['best_entry']['label']}`  ")
         lines.append(f"**Match Confidence:** {f['confidence']}  ")
-        if f["path"]:
+        if f.get("path"):
             chain = " -> ".join(_pretty_label(n) for n in f["path"])
             lines.append(f"**Call Chain:** `{chain}`  ")
-            lines.append(f"**Evidence:** Path length: {len(f['path'])} hops  ")
+            lines.append(f"**Path Length:** {len(f['path'])} hops  ")
+        if has_dynamic and f.get("dynamic_observed"):
+            callers = f.get("dynamic_callers", [])
+            if callers:
+                caller_str = ", ".join(_pretty_label(c) for c in callers[:5])
+                if len(callers) > 5:
+                    caller_str += f" (+{len(callers) - 5} more)"
+                lines.append(f"**Dynamic Evidence:** Sink observed at runtime, called by: {caller_str}  ")
+            else:
+                lines.append("**Dynamic Evidence:** Sink observed at runtime  ")
+        elif has_dynamic and not f.get("dynamic_observed"):
+            lines.append("**Dynamic Evidence:** Sink was NOT observed during runtime trace  ")
+        if f.get("contradiction_explanation"):
+            lines.append(f"**Contradiction:** {f['contradiction_explanation']}  ")
         for flag in f.get("fp_flags", []):
             lines.append(f"  **FP Risk:** {flag}  ")
         lines.append("\n---\n")
 
     for f in sorted(unreachable, key=lambda x: severity_order.get(x["severity"], 9)):
         lines.append(f"## [NOT REACHABLE] {f['title']} - {f['severity']}\n")
+        if has_dynamic:
+            lines.append("**Analysis Source:** Neither static CFG nor runtime trace found a path  ")
         lines.append(f"**Sink:** `{f['matched_label']}`  ")
         lines.append(f"**Entry Point(s) Checked:** {f['entry_points_checked']}  ")
         if f.get("unbounded_reachable"):
@@ -1026,8 +1076,10 @@ def generate_report(findings, apk_path, source_name, max_depth, output_path):
 
     for f in unresolved:
         lines.append(f"## [UNRESOLVED] {f['title']} - {f['severity']}\n")
+        if has_dynamic:
+            lines.append("**Analysis Source:** Sink unmatched — neither analysis method applicable  ")
         raw = f["raw_class"]
-        if f["raw_method"]:
+        if f.get("raw_method"):
             raw += f".{f['raw_method']}"
         lines.append(f"**Raw Finding:** `{raw}`  ")
         lines.append("**Reason:** Sink method could not be matched to any call graph node  ")
@@ -1038,6 +1090,33 @@ def generate_report(findings, apk_path, source_name, max_depth, output_path):
     with open(output_path, "w", encoding="utf-8") as out:
         out.write(report)
     info(f"Report written to {output_path}")
+
+
+def _verdict_tag(finding, has_dynamic):
+    """Build the verdict tag for a REACHABLE finding."""
+    label = finding.get("validation_label")
+    if has_dynamic and label == "VALIDATED":
+        return "[VALIDATED]"
+    elif has_dynamic and label == "CONTRADICTION":
+        return "[CONTRADICTION]"
+    else:
+        return "[REACHABLE]"
+
+
+def _analysis_source_text(finding):
+    """Return a human-readable analysis source description."""
+    label = finding.get("validation_label")
+    if label == "VALIDATED":
+        return "Confirmed by both static CFG analysis and runtime trace"
+    elif label == "CONTRADICTION":
+        ctype = finding.get("contradiction_type")
+        if ctype == "dynamic_no_static":
+            return ("Exercised at runtime but no static CFG path found "
+                    "(static/dynamic contradiction)")
+        elif ctype == "static_no_dynamic":
+            return ("Static CFG path found but sink not exercised during "
+                    "runtime trace (static/dynamic contradiction)")
+    return "Static CFG analysis"
 
 # ---------------------------------------------------------------------------
 # CLI entry point
@@ -1070,6 +1149,12 @@ def main():
     parser.add_argument("--save-findings", default=None,
                         help="Save the auto-fetched MobSF report to this file path "
                              "(useful for re-runs without re-scanning).")
+
+    # Dynamic analysis integration
+    parser.add_argument("--dynamic", default=None, metavar="TRACE_FILE",
+                        help="Path to a runtime trace JSON captured by dynamic_analysis.py. "
+                             "When provided, cross-validates static results against dynamic "
+                             "observations and labels findings as [VALIDATED] or [CONTRADICTION].")
 
     args = parser.parse_args()
 
@@ -1144,17 +1229,73 @@ def main():
     # Step 6 - FP risk checks
     findings = fp_risk_checks(findings, apk)
 
+    # Step 6.5 - Dynamic analysis cross-validation (optional)
+    trace_meta = None
+    if args.dynamic:
+        try:
+            from dynamic_analysis import (
+                load_trace, enrich_call_graph, build_dynamic_sink_index,
+                cross_validate,
+            )
+        except ImportError:
+            error_exit("--dynamic requires dynamic_analysis.py in the same directory. "
+                       "Ensure the module is present and frida/frida-tools are installed.")
+
+        if not os.path.isfile(args.dynamic):
+            error_exit(f"Dynamic trace file not found: {args.dynamic}")
+
+        trace = load_trace(args.dynamic)
+        trace_meta = trace
+
+        # Build observation index from runtime trace
+        observed_methods, callee_to_callers = build_dynamic_sink_index(trace)
+        info(f"Dynamic trace: {len(observed_methods)} unique methods observed at runtime")
+
+        # Cross-validate static verdicts against dynamic observations
+        findings = cross_validate(findings, observed_methods, callee_to_callers)
+
+        # For contradiction findings where dynamic saw the sink but static didn't,
+        # enrich the graph with runtime edges and attempt path recovery via BFS
+        dynamic_contradictions = [
+            f for f in findings
+            if f.get("contradiction_type") == "dynamic_no_static"
+        ]
+        if dynamic_contradictions:
+            info(f"Enriching graph with runtime edges for {len(dynamic_contradictions)} contradictions...")
+            enrich_call_graph(cg, node_by_norm, trace)
+            for f in dynamic_contradictions:
+                if f["matched_node"] is not None:
+                    for ep in entry_points:
+                        path = bfs_reachability(cg, ep["node"], f["matched_node"], args.max_depth)
+                        if path:
+                            f["path"] = path
+                            f["best_entry"] = ep
+                            break
+
+        # Run FP checks on any newly-reachable findings
+        findings = fp_risk_checks(findings, apk)
+
     # Step 7 - Generate report
-    generate_report(findings, args.apk, source, args.max_depth, args.output)
+    generate_report(findings, args.apk, source, args.max_depth, args.output,
+                    dynamic_trace=trace_meta)
 
     # Summary to stderr
     verdicts = {"REACHABLE": 0, "NOT REACHABLE": 0, "UNRESOLVED": 0}
     for f in findings:
         verdicts[f["verdict"]] += 1
     beyond = sum(1 for f in findings if f.get("unbounded_reachable") and f["verdict"] == "NOT REACHABLE")
-    info(f"Done - REACHABLE: {verdicts['REACHABLE']}, "
-         f"NOT REACHABLE: {verdicts['NOT REACHABLE']}, "
-         f"UNRESOLVED: {verdicts['UNRESOLVED']}")
+
+    if args.dynamic:
+        validated = sum(1 for f in findings if f.get("validation_label") == "VALIDATED")
+        contradictions = sum(1 for f in findings if f.get("validation_label") == "CONTRADICTION")
+        info(f"Done (cross-validated) - REACHABLE: {verdicts['REACHABLE']}, "
+             f"NOT REACHABLE: {verdicts['NOT REACHABLE']}, "
+             f"UNRESOLVED: {verdicts['UNRESOLVED']} | "
+             f"VALIDATED: {validated}, CONTRADICTION: {contradictions}")
+    else:
+        info(f"Done - REACHABLE: {verdicts['REACHABLE']}, "
+             f"NOT REACHABLE: {verdicts['NOT REACHABLE']}, "
+             f"UNRESOLVED: {verdicts['UNRESOLVED']}")
     if beyond:
         info(f"  {beyond} finding(s) ARE reachable beyond depth {args.max_depth} - increase --max-depth to capture them")
 

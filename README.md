@@ -75,10 +75,11 @@ python reachability.py --apk target.apk --findings mobsf_report.json --output re
 | `--mobsf-url` | No | - | MobSF server URL. Enables auto-scan mode (upload, scan, fetch report). |
 | `--mobsf-key` | Conditional | - | MobSF REST API key. Required when `--mobsf-url` is set. |
 | `--save-findings` | No | - | Save the auto-fetched MobSF report JSON to disk for re-use. |
+| `--dynamic` | No | - | Path to a runtime trace JSON (from `dynamic_analysis.py trace`). Enables cross-validation: labels findings as `[VALIDATED]` or `[CONTRADICTION]`. |
 
 ## Example Output
 
-### Static-only mode
+### Without `--dynamic` (static only)
 
 ```markdown
 ## [REACHABLE] SQL Injection in Login Query - Critical
@@ -87,7 +88,7 @@ Sink:             Lcom/test/reachability/SqlActivity;->performLogin()V
 Entry Point:      Lcom/test/reachability/SqlActivity;->onCreate(Landroid/os/Bundle;)V
 Match Confidence: Exact class + method
 Call Chain:       SqlActivity.onCreate -> Lambda.onClick -> SqlActivity.performLogin
-Evidence:         Path length: 3 hops
+Path Length:      3 hops
 
 ## [NOT REACHABLE] Contact Exfiltration in Dead Code Path - Critical
 
@@ -96,30 +97,31 @@ Entry Point(s) Checked: 11
 Reason:                No path found within 15 hops from any entry point
 ```
 
-### Cross-validated mode (with runtime trace)
+### With `--dynamic trace.json` (cross-validated)
 
 ```markdown
-## [REACHABLE — Static + Dynamic] SQL Injection in Login Query - Critical
+## [VALIDATED] SQL Injection in Login Query - Critical
 
 Analysis Source:   Confirmed by both static CFG analysis and runtime trace
 Sink:              Lcom/test/reachability/SqlActivity;->performLogin()V
 Entry Point:       Lcom/test/reachability/SqlActivity;->onCreate(Landroid/os/Bundle;)V
-Call Chain (static): SqlActivity.onCreate -> Lambda.onClick -> SqlActivity.performLogin
-Dynamic Evidence:  Sink observed at runtime (callers: Lambda.onClick)
+Call Chain:        SqlActivity.onCreate -> Lambda.onClick -> SqlActivity.performLogin
+Dynamic Evidence:  Sink observed at runtime, called by: Lambda.onClick
 
-## [REACHABLE — Static Only] Insecure Logging of Credentials - Medium
+## [CONTRADICTION] Insecure Logging of Credentials - Medium
 
-Analysis Source:   Static CFG path found; sink not exercised during runtime trace
+Analysis Source:   Static CFG path found but sink not exercised during runtime trace
 Sink:              Lcom/test/reachability/MainActivity;->logCredentials()V
 Dynamic Evidence:  Sink was NOT observed during runtime trace
+Contradiction:     Static CFG found a path to this sink, but it was not exercised
+                   during runtime tracing...
 
-## [REACHABLE — Dynamic Only] Reflection-based Data Leak - High
+## [CONTRADICTION] Reflection-based Data Leak - High
 
-Analysis Source:   Sink exercised at runtime; no static CFG path found (contradiction)
-Dynamic Evidence:  Sink observed at runtime (callers: ReflectionHelper.invoke)
-Explanation:       This is a static/dynamic contradiction. The static call graph
-                   has no path to this sink, but runtime tracing confirmed it was
-                   executed.
+Analysis Source:   Exercised at runtime but no static CFG path found
+Dynamic Evidence:  Sink observed at runtime, called by: ReflectionHelper.invoke
+Contradiction:     No static CFG path was found to this sink, but runtime tracing
+                   confirmed it was executed...
 
 ## [NOT REACHABLE] Contact Exfiltration in Dead Code Path - Critical
 
@@ -128,7 +130,7 @@ Analysis Source:   Neither static CFG nor runtime trace found a path
 
 ## Report Verdicts
 
-### Static-only mode (`reachability.py`)
+### Without `--dynamic`
 
 | Verdict | Meaning | Action |
 |---|---|---|
@@ -136,15 +138,15 @@ Analysis Source:   Neither static CFG nor runtime trace found a path
 | **NOT REACHABLE** | No call chain found within the depth limit | Lower priority — may be dead code |
 | **UNRESOLVED** | Finding could not be matched to any call-graph node | Manual review needed |
 
-### Cross-validated mode (`dynamic_analysis.py enrich`)
+### With `--dynamic`
 
-When a runtime trace is provided, every finding is labelled by analysis source:
+When a runtime trace is provided, reachable findings gain validation labels:
 
 | Verdict | Meaning | Action |
 |---|---|---|
-| **REACHABLE — Static + Dynamic** | Both static CFG and runtime trace confirm reachability | Highest confidence — investigate and fix |
-| **REACHABLE — Static Only** | Static CFG path exists; sink not exercised at runtime | Likely reachable but not triggered during tracing session — review |
-| **REACHABLE — Dynamic Only** | Sink exercised at runtime; no static CFG path (contradiction) | Static analysis blind spot — investigate; likely reflection/dynamic dispatch |
+| **VALIDATED** | Both static CFG and runtime trace confirm reachability | Highest confidence — prioritise fix |
+| **CONTRADICTION** | Static and dynamic results disagree (see explanation on each finding) | Investigate — may be a static analysis blind spot or a conditionally dead branch |
+| **REACHABLE** | Static CFG path exists; no dynamic observation either way | Standard priority — investigate and fix |
 | **NOT REACHABLE** | Neither static nor dynamic analysis found a path | Lower priority — likely dead code |
 | **UNRESOLVED** | Finding could not be matched to any call-graph node | Manual review needed |
 
@@ -182,7 +184,7 @@ Only the `code_analysis` section is parsed. The `android_api` section (informati
 | File | Description |
 |---|---|
 | `reachability.py` | Main CLI tool (single file, no framework dependencies) |
-| `dynamic_analysis.py` | Optional dynamic analysis module (Frida-based runtime tracing + static/dynamic cross-validation) |
+| `dynamic_analysis.py` | Optional dynamic analysis module (Frida-based trace capture + cross-validation helpers for `--dynamic` flag) |
 | `INSTRUCTIONS.md` | Detailed usage guide with troubleshooting |
 | `CLAUDE.md` | Guidance for Claude Code when working in this repository |
 | `sample_mobsf_findings.json` | Sample MobSF `code_analysis` findings mapped to the test APK |
@@ -191,7 +193,7 @@ Only the `code_analysis` section is parsed. The `android_api` section (informati
 
 ## Dynamic Analysis & Cross-Validation (Optional)
 
-The static call graph can be enriched with runtime method traces captured via [Frida](https://frida.re/) instrumentation. Beyond enrichment, the module **cross-validates** static and dynamic results — flagging agreements (both confirm reachability) and contradictions (one finds a path the other doesn't) with clear labels on every finding.
+The `--dynamic` flag enables cross-validation of static results against a runtime trace captured via [Frida](https://frida.re/) instrumentation. Agreements are labelled `[VALIDATED]` and disagreements are labelled `[CONTRADICTION]` with a clear explanation.
 
 ### Prerequisites
 
@@ -204,34 +206,6 @@ pip install frida frida-tools
 
 ### Workflow
 
-```
-                                  +------------------+
-  Device / Emulator               |  Runtime Trace   |
-  (app + Frida + monkey) -------->|  (JSON edges)    |
-                                  +--------+---------+
-                                           |
-          Static Call Graph                |
-          (Androguard)                     |
-               |                           |
-               v                           v
-          Static-Only BFS          Dynamic Observation
-               |                    Index (sink seen?)
-               v                           |
-          +----+---------------------------+----+
-          |        Cross-Validation              |
-          |  Static verdict x Dynamic evidence   |
-          +----+---------+---------+--------+---+
-               |         |         |        |
-          Confirmed  Static    Dynamic    Not
-          (both)     Only      Only       Reachable
-                              (contradiction)
-                                   |
-                          Graph enrichment +
-                          path recovery BFS
-                                   |
-                       Cross-Validated Report
-```
-
 **Step 1 — Capture a runtime trace** (run once per APK, reuse across analyses):
 
 ```bash
@@ -240,42 +214,36 @@ python dynamic_analysis.py trace --package com.test.reachability --output trace.
 
 This spawns the app via Frida, hooks all methods in the target package, runs Android's `monkey` tool for automated UI exercising, and records caller/callee pairs.
 
-**Step 2 — Run cross-validated analysis:**
+**Step 2 — Run cross-validated analysis** (just add `--dynamic`):
 
 ```bash
-python dynamic_analysis.py enrich --apk target.apk --findings mobsf_report.json --trace trace.json --output report.md
+python reachability.py --apk target.apk --findings mobsf_report.json --dynamic trace.json --output report.md
 ```
 
-**Or combine both steps (fully automated):**
+When `--dynamic` is absent, the tool runs exactly as before — pure static analysis, no change to default behaviour.
 
-```bash
-python dynamic_analysis.py auto --apk target.apk --findings mobsf_report.json --package com.test.reachability --output report.md
-```
+### How Cross-Validation Works
 
-### What the Cross-Validation Produces
+1. Static BFS runs first on the Androguard call graph (same as without `--dynamic`)
+2. Each finding's sink is checked against the runtime trace observation index
+3. Results are compared:
+   - **Static REACHABLE + dynamic observed** → `[VALIDATED]`
+   - **Static REACHABLE + NOT dynamic observed** → `[CONTRADICTION]` (path may be a dead branch or require specific input)
+   - **Static NOT REACHABLE + dynamic observed** → `[CONTRADICTION]` (static analysis blind spot — reflection, dynamic dispatch, etc.)
+   - **Static NOT REACHABLE + NOT dynamic observed** → `[NOT REACHABLE]`
+4. For contradictions where dynamic observed the sink but static didn't, the runtime edges are merged into the graph and BFS is re-run to attempt path recovery
 
-The report groups findings into labelled sections:
+### Trace Capture CLI Options
 
-- **Confirmed Reachable (Static + Dynamic)** — both the static CFG and the runtime trace agree the sink is reachable. Highest confidence.
-- **Reachable — Static Only** — the static CFG found a path, but the sink was not exercised at runtime. May need specific user interaction not covered by monkey.
-- **Reachable — Dynamic Only (Contradictions)** — the sink was exercised at runtime but the static CFG has no path. Indicates a static analysis blind spot (reflection, dynamic dispatch, coroutines). These are explicitly flagged with an explanation.
-- **Not Reachable** — neither method found a path.
-- **Unresolved** — sink unmatched in the call graph.
+| Flag | Default | Description |
+|---|---|---|
+| `--package` | - | Target app package name |
+| `--duration` | `30` | Trace duration in seconds |
+| `--monkey-events` | `2000` | Monkey UI events (0 to disable) |
+| `--device` | first available | ADB device serial |
+| `--extra-prefix` | - | Additional package prefixes to hook (repeatable) |
 
-### Dynamic Analysis CLI Options
-
-| Flag | Command | Default | Description |
-|---|---|---|---|
-| `--package` | trace, auto | - | Target app package name |
-| `--duration` | trace, auto | `30` | Trace duration in seconds |
-| `--monkey-events` | trace, auto | `2000` | Monkey UI events (0 to disable) |
-| `--device` | trace, auto | first available | ADB device serial |
-| `--trace` | enrich | - | Path to runtime trace JSON |
-| `--extra-prefix` | trace | - | Additional package prefixes to hook (repeatable) |
-
-All flags from the base tool (`--apk`, `--findings`, `--mobsf-url`, `--mobsf-key`, `--max-depth`, `--debug`, `--output`) are also accepted by the `enrich` and `auto` commands.
-
-The dynamic analysis module (`dynamic_analysis.py`) is fully self-contained. Removing it has no effect on the base tool.
+The dynamic analysis module (`dynamic_analysis.py`) is fully self-contained. Removing it has no effect on the base tool (the `--dynamic` flag simply becomes unavailable).
 
 ## Tech Stack
 
