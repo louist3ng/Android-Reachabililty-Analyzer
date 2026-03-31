@@ -38,32 +38,72 @@ Most scanners flag every pattern match as a finding — but if no execution path
 
 **Note:** Only the `code_analysis` section of MobSF reports is parsed. The `android_api` and `manifest_analysis` sections are ignored — `android_api` contains informational API usage patterns rather than specific vulnerabilities, and `manifest_analysis` findings are configuration-level issues that don't map to call-graph nodes.
 
-## Quick Start
+## Setup
 
-### Install dependencies
+### Core dependencies (required)
+
 ```
 pip install androguard networkx
 ```
 
-### Option 1: Auto-scan with MobSF (recommended)
+These power the static call-graph analysis that every run uses.
 
-No need to manually export findings. The tool uploads the APK, triggers the scan, fetches the report, and runs reachability analysis in one command:
+### MobSF (required — provides the vulnerability findings)
+
+MobSF scans the APK for vulnerabilities. You can either let the tool auto-scan via the MobSF API, or supply a pre-exported JSON report.
+
+- Install and run MobSF: `docker run -p 8000:8000 opensecurity/mobile-security-framework-mobsf`
+- Grab your API key from the MobSF web UI (REST API Key on the home page)
+
+### Frida (optional — enables runtime cross-validation)
+
+Adding a Frida runtime trace lets the tool cross-validate static results against actual runtime behaviour, labelling findings as `[VALIDATED]` or `[CONTRADICTION]`.
+
+```
+pip install frida frida-tools
+```
+
+Additional requirements:
+- Android emulator or rooted device accessible via ADB
+- [frida-server](https://frida.re/docs/android/) running on the device (version must match the `frida` Python package)
+
+## Usage
+
+### Static analysis only
+
+**Option A — Auto-scan with MobSF (recommended):**
 
 ```
 python reachability.py --apk target.apk --mobsf-url http://localhost:8000 --mobsf-key YOUR_API_KEY --output report.md
 ```
 
-Prerequisites: MobSF must be running (e.g. `docker run -p 8000:8000 opensecurity/mobile-security-framework-mobsf`).
-
-### Option 2: Pre-generated MobSF findings file
-
-If you already have a MobSF JSON report:
+**Option B — Pre-exported MobSF findings file:**
 
 ```
 python reachability.py --apk target.apk --findings mobsf_report.json --output report.md
 ```
 
+### Static + dynamic cross-validation
+
+**Step 1 — Capture a runtime trace** (run once per APK, reuse across analyses):
+
+```
+python dynamic_analysis.py trace --package com.test.reachability --output trace.json --duration 30
+```
+
+This spawns the app via Frida, hooks all methods in the target package, runs Android's `monkey` tool for automated UI exercising, and records caller/callee pairs.
+
+**Step 2 — Run cross-validated analysis** (add `--dynamic` to any static command):
+
+```
+python reachability.py --apk target.apk --findings mobsf_report.json --dynamic trace.json --output report.md
+```
+
+When `--dynamic` is absent, the tool runs pure static analysis — no change to default behaviour.
+
 ## CLI Options
+
+### reachability.py
 
 | Flag | Required | Default | Description |
 |---|---|---|---|
@@ -76,6 +116,16 @@ python reachability.py --apk target.apk --findings mobsf_report.json --output re
 | `--mobsf-key` | Conditional | - | MobSF REST API key. Required when `--mobsf-url` is set. |
 | `--save-findings` | No | - | Save the auto-fetched MobSF report JSON to disk for re-use. |
 | `--dynamic` | No | - | Path to a runtime trace JSON (from `dynamic_analysis.py trace`). Enables cross-validation: labels findings as `[VALIDATED]` or `[CONTRADICTION]`. |
+
+### dynamic_analysis.py trace
+
+| Flag | Default | Description |
+|---|---|---|
+| `--package` | - | Target app package name |
+| `--duration` | `30` | Trace duration in seconds |
+| `--monkey-events` | `2000` | Monkey UI events (0 to disable) |
+| `--device` | first available | ADB device serial |
+| `--extra-prefix` | - | Additional package prefixes to hook (repeatable) |
 
 ## Example Output
 
@@ -191,38 +241,9 @@ Only the `code_analysis` section is parsed. The `android_api` section (informati
 | `samplereport.md` | Sample output report (pre-generated for reference) |
 | `.gitignore` | Excludes APKs, debug logs, generated reports, and session data |
 
-## Dynamic Analysis & Cross-Validation (Optional)
+## How Cross-Validation Works
 
-The `--dynamic` flag enables cross-validation of static results against a runtime trace captured via [Frida](https://frida.re/) instrumentation. Agreements are labelled `[VALIDATED]` and disagreements are labelled `[CONTRADICTION]` with a clear explanation.
-
-### Prerequisites
-
-```
-pip install frida frida-tools
-```
-
-- Android emulator or rooted device accessible via ADB
-- [frida-server](https://frida.re/docs/android/) running on the device (version must match the `frida` Python package)
-
-### Workflow
-
-**Step 1 — Capture a runtime trace** (run once per APK, reuse across analyses):
-
-```bash
-python dynamic_analysis.py trace --package com.test.reachability --output trace.json --duration 30
-```
-
-This spawns the app via Frida, hooks all methods in the target package, runs Android's `monkey` tool for automated UI exercising, and records caller/callee pairs.
-
-**Step 2 — Run cross-validated analysis** (just add `--dynamic`):
-
-```bash
-python reachability.py --apk target.apk --findings mobsf_report.json --dynamic trace.json --output report.md
-```
-
-When `--dynamic` is absent, the tool runs exactly as before — pure static analysis, no change to default behaviour.
-
-### How Cross-Validation Works
+When `--dynamic` is provided:
 
 1. Static BFS runs first on the Androguard call graph (same as without `--dynamic`)
 2. Each finding's sink is checked against the runtime trace observation index
@@ -233,17 +254,7 @@ When `--dynamic` is absent, the tool runs exactly as before — pure static anal
    - **Static NOT REACHABLE + NOT dynamic observed** → `[NOT REACHABLE]`
 4. For contradictions where dynamic observed the sink but static didn't, the runtime edges are merged into the graph and BFS is re-run to attempt path recovery
 
-### Trace Capture CLI Options
-
-| Flag | Default | Description |
-|---|---|---|
-| `--package` | - | Target app package name |
-| `--duration` | `30` | Trace duration in seconds |
-| `--monkey-events` | `2000` | Monkey UI events (0 to disable) |
-| `--device` | first available | ADB device serial |
-| `--extra-prefix` | - | Additional package prefixes to hook (repeatable) |
-
-The dynamic analysis module (`dynamic_analysis.py`) is fully self-contained. Removing it has no effect on the base tool (the `--dynamic` flag simply becomes unavailable).
+The dynamic analysis module (`dynamic_analysis.py`) is fully self-contained. Removing it has no effect on the base tool.
 
 ## Tech Stack
 
