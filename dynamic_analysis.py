@@ -115,9 +115,16 @@ function getCallerLabel() {
 }
 
 function hookAll() {
+    send({ type: 'diag', payload: 'hookAll called, Java.available=' + Java.available });
     Java.perform(function () {
+        send({ type: 'diag', payload: 'Java.perform callback fired, enumerating classes...' });
+        var matchedClasses = 0;
+        var hookedMethods = 0;
+        var totalClasses = 0;
+
         Java.enumerateLoadedClasses({
         onMatch: function (className) {
+            totalClasses++;
             var dominated = false;
             for (var p = 0; p < PREFIXES.length; p++) {
                 if (className.indexOf(PREFIXES[p]) === 0) {
@@ -126,6 +133,9 @@ function hookAll() {
                 }
             }
             if (!dominated) return;
+
+            matchedClasses++;
+            send({ type: 'diag', payload: 'Matched class: ' + className });
 
             try {
                 var clazz = Java.use(className);
@@ -154,16 +164,19 @@ function hookAll() {
                                     return overload.apply(this, arguments);
                                 };
                             })(methodName, overloads[o]);
+                            hookedMethods++;
                         }
                     } catch (e) {
                         // Some methods can't be hooked (native, abstract) — skip
                     }
                 }
             } catch (e) {
-                // Class may not be hookable — skip
+                send({ type: 'diag', payload: 'Failed to hook class ' + className + ': ' + e });
             }
         },
         onComplete: function () {
+            send({ type: 'diag', payload: 'Enumeration done: ' + totalClasses + ' total classes, ' +
+                   matchedClasses + ' matched, ' + hookedMethods + ' methods hooked' });
             send({ type: 'status', payload: 'hooking_complete' });
         }
         });
@@ -321,6 +334,10 @@ def capture_trace(package, duration=30, output_path="trace.json",
             elif payload.get("type") == "status" and payload.get("payload") == "hooking_complete":
                 hooking_done[0] = True
                 _info("Frida hooking complete — tracing active")
+            elif payload.get("type") == "status":
+                _info(f"Frida status: {payload.get('payload')}")
+            elif payload.get("type") == "diag":
+                _debug(f"Frida: {payload.get('payload')}")
         elif message["type"] == "error":
             _warn(f"Frida error: {message.get('description', message)}")
 
