@@ -26,10 +26,12 @@ Usage:
 
 import argparse
 import json
+import lzma
 import os
 import subprocess
 import sys
 import time
+import urllib.request
 from datetime import datetime
 
 # ---------------------------------------------------------------------------
@@ -243,6 +245,139 @@ def _check_adb():
         _error_exit("ADB not found on PATH.  Install Android SDK platform-tools.")
     except subprocess.TimeoutExpired:
         _error_exit("ADB timed out.  Check your device connection.")
+
+
+_FRIDA_SERVER_PATH = "/data/local/tmp/frida-server"
+
+
+def _get_device_arch(device=None):
+    """Get the CPU architecture of the connected device."""
+    cmd = ["adb"]
+    if device:
+        cmd += ["-s", device]
+    cmd += ["shell", "getprop", "ro.product.cpu.abi"]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+    abi = result.stdout.strip()
+    # Map Android ABI to Frida release name
+    abi_map = {
+        "arm64-v8a": "arm64",
+        "armeabi-v7a": "arm",
+        "x86_64": "x86_64",
+        "x86": "x86",
+    }
+    arch = abi_map.get(abi)
+    if not arch:
+        _error_exit(f"Unsupported device architecture: {abi}")
+    return arch
+
+
+def _is_frida_server_running(device=None):
+    """Check if frida-server is already running on the device."""
+    cmd = ["adb"]
+    if device:
+        cmd += ["-s", device]
+    cmd += ["shell", "ps | grep frida-server || true"]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+    return "frida-server" in result.stdout
+
+
+def _is_frida_server_present(device=None):
+    """Check if frida-server binary exists on the device."""
+    cmd = ["adb"]
+    if device:
+        cmd += ["-s", device]
+    cmd += ["shell", f"ls {_FRIDA_SERVER_PATH} 2>/dev/null && echo EXISTS || echo MISSING"]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+    return "EXISTS" in result.stdout
+
+
+def _download_frida_server(arch):
+    """Download the correct frida-server binary matching the installed frida version."""
+    import frida
+    version = frida.__version__
+    filename = f"frida-server-{version}-android-{arch}"
+    xz_filename = filename + ".xz"
+    url = f"https://github.com/frida/frida/releases/download/{version}/{xz_filename}"
+
+    cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "frida-server")
+    os.makedirs(cache_dir, exist_ok=True)
+    cached_bin = os.path.join(cache_dir, filename)
+
+    if os.path.isfile(cached_bin):
+        _info(f"Using cached frida-server: {cached_bin}")
+        return cached_bin
+
+    _info(f"Downloading frida-server {version} for {arch}...")
+    _info(f"  URL: {url}")
+    try:
+        xz_path = os.path.join(cache_dir, xz_filename)
+        urllib.request.urlretrieve(url, xz_path)
+    except Exception as e:
+        _error_exit(
+            f"Failed to download frida-server: {e}\n"
+            f"Download manually from: https://github.com/frida/frida/releases/tag/{version}\n"
+            f"Then push to device: adb push <file> {_FRIDA_SERVER_PATH}"
+        )
+
+    _info("Extracting...")
+    with lzma.open(xz_path, "rb") as xz_f:
+        with open(cached_bin, "wb") as out_f:
+            out_f.write(xz_f.read())
+    os.remove(xz_path)
+
+    _info(f"Cached at: {cached_bin}")
+    return cached_bin
+
+
+def _ensure_frida_server(device=None):
+    """Check if frida-server is running on the device; if not, push and start it."""
+    if _is_frida_server_running(device):
+        _info("frida-server is already running on device")
+        return
+
+    _info("frida-server not running on device — setting up...")
+
+    arch = _get_device_arch(device)
+    _debug(f"Device architecture: {arch}")
+
+    if not _is_frida_server_present(device):
+        local_bin = _download_frida_server(arch)
+
+        _info(f"Pushing frida-server to device...")
+        cmd = ["adb"]
+        if device:
+            cmd += ["-s", device]
+        cmd += ["push", local_bin, _FRIDA_SERVER_PATH]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            _error_exit(f"Failed to push frida-server: {result.stderr.strip()}")
+
+        cmd = ["adb"]
+        if device:
+            cmd += ["-s", device]
+        cmd += ["shell", f"chmod 755 {_FRIDA_SERVER_PATH}"]
+        subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+    else:
+        _info("frida-server binary already on device")
+
+    # Start frida-server in background
+    _info("Starting frida-server...")
+    cmd = ["adb"]
+    if device:
+        cmd += ["-s", device]
+    cmd += ["shell", f"su -c '{_FRIDA_SERVER_PATH} -D &'"]
+    subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    # Wait for it to start
+    for i in range(10):
+        time.sleep(1)
+        if _is_frida_server_running(device):
+            _info("frida-server started successfully")
+            return
+    _error_exit(
+        "frida-server failed to start. Your emulator may not be rooted.\n"
+        "Use an emulator image without Google Play Store (labelled 'Google APIs' only)."
+    )
 
 
 def _install_apk(apk_path, device=None):
@@ -739,6 +874,7 @@ examples:
         _info(f"Package: {package}")
 
         _check_adb()
+        _ensure_frida_server(device=args.device)
         _install_apk(args.apk, device=args.device)
 
         capture_trace(
