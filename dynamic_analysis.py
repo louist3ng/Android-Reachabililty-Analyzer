@@ -171,14 +171,23 @@ function hookAll() {
 }
 
 // Wait for Java VM to be available before hooking
-if (Java.available) {
-    hookAll();
-} else {
+function tryHook() {
+    try {
+        if (Java.available) {
+            hookAll();
+            return true;
+        }
+    } catch (e) {
+        // Java global not ready yet
+    }
+    return false;
+}
+
+if (!tryHook()) {
     send({ type: 'status', payload: 'waiting_for_java' });
     var poll = setInterval(function () {
-        if (Java.available) {
+        if (tryHook()) {
             clearInterval(poll);
-            hookAll();
         }
     }, 500);
 }
@@ -330,16 +339,23 @@ def capture_trace(package, duration=30, output_path="trace.json",
     _info(f"Spawning {package}...")
     try:
         pid = frida_device.spawn([package])
-        session = frida_device.attach(pid)
+        frida_device.resume(pid)
     except Exception as e:
         _error_exit(
-            f"Failed to spawn/attach to {package}: {e}\n"
+            f"Failed to spawn {package}: {e}\n"
             "Ensure the app is installed and frida-server is running."
         )
 
-    frida_device.resume(pid)
     _info("App launched — waiting for Java VM to initialise...")
-    time.sleep(3)
+    time.sleep(5)
+
+    try:
+        session = frida_device.attach(pid)
+    except Exception as e:
+        _error_exit(
+            f"Failed to attach to {package} (pid {pid}): {e}\n"
+            "The app may have crashed on launch."
+        )
 
     script = session.create_script(script_source)
     script.on("message", on_message)
