@@ -8,12 +8,15 @@ CLAUDE.md
 # Session context (per-chat reference, not for repo)
 SESSION_CONTEXT.md
 
-# Generated reports (keep only report.md as sample reference)
+# Generated reports (keep only samplereport.md as reference)
 reportv1.md
 reportv2.md
 reportv2_real.md
 reportv2_sample.md
 report_auto.md
+
+# Internal documentation (not for repo)
+DYNAMIC_ANALYSIS.md
 
 # Real MobSF reports (may contain sensitive data)
 mobsf_real_report.json
