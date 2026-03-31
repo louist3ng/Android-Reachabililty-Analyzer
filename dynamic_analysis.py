@@ -114,8 +114,9 @@ function getCallerLabel() {
     return null;
 }
 
-Java.perform(function () {
-    Java.enumerateLoadedClasses({
+function hookAll() {
+    Java.perform(function () {
+        Java.enumerateLoadedClasses({
         onMatch: function (className) {
             var dominated = false;
             for (var p = 0; p < PREFIXES.length; p++) {
@@ -165,8 +166,22 @@ Java.perform(function () {
         onComplete: function () {
             send({ type: 'status', payload: 'hooking_complete' });
         }
+        });
     });
-});
+}
+
+// Wait for Java VM to be available before hooking
+if (Java.available) {
+    hookAll();
+} else {
+    send({ type: 'status', payload: 'waiting_for_java' });
+    var poll = setInterval(function () {
+        if (Java.available) {
+            clearInterval(poll);
+            hookAll();
+        }
+    }, 500);
+}
 """
 
 
@@ -322,11 +337,14 @@ def capture_trace(package, duration=30, output_path="trace.json",
             "Ensure the app is installed and frida-server is running."
         )
 
+    frida_device.resume(pid)
+    _info("App launched — waiting for Java VM to initialise...")
+    time.sleep(3)
+
     script = session.create_script(script_source)
     script.on("message", on_message)
     script.load()
-    frida_device.resume(pid)
-    _info(f"App launched.  Tracing for {duration} seconds...")
+    _info(f"Instrumentation loaded.  Tracing for {duration} seconds...")
 
     # Start monkey for automated exercising
     monkey_proc = None
