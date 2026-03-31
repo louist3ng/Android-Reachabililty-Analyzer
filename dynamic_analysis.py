@@ -208,6 +208,25 @@ def _check_adb():
         _error_exit("ADB timed out.  Check your device connection.")
 
 
+def _install_apk(apk_path, device=None):
+    """Install the APK onto the connected device via ADB, replacing any existing version."""
+    cmd = ["adb"]
+    if device:
+        cmd += ["-s", device]
+    cmd += ["install", "-r", apk_path]
+    _info(f"Installing {apk_path}...")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            stderr = result.stderr.strip() or result.stdout.strip()
+            _error_exit(f"APK install failed: {stderr}")
+        _info("APK installed successfully")
+    except FileNotFoundError:
+        _error_exit("ADB not found on PATH.  Install Android SDK platform-tools.")
+    except subprocess.TimeoutExpired:
+        _error_exit("APK install timed out (120s).  Check device connection.")
+
+
 def _run_monkey(package, device=None, events=2000):
     """
     Run Android's monkey tool for automated pseudo-random UI input.
@@ -667,6 +686,9 @@ examples:
         if not package:
             _error_exit("Could not extract package name from APK")
         _info(f"Package: {package}")
+
+        _check_adb()
+        _install_apk(args.apk, device=args.device)
 
         capture_trace(
             package=package,
