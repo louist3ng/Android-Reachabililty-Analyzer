@@ -1242,8 +1242,10 @@ def main():
                        "Ensure the module is present and frida/frida-tools are installed.")
 
         if not os.path.isfile(args.dynamic):
-            error_exit(f"Dynamic trace file not found: {args.dynamic}")
+            warn(f"Dynamic trace file not found: {args.dynamic} — skipping dynamic cross-validation")
+            args.dynamic = None
 
+    if args.dynamic:
         trace = load_trace(args.dynamic)
         trace_meta = trace
 
