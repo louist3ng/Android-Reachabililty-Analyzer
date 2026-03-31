@@ -18,13 +18,10 @@ Requires:
 
 Usage:
     # Capture a runtime trace (run once, reuse across analyses)
-    python dynamic_analysis.py trace --package com.test.reachability \
-                                     --output trace.json \
-                                     --duration 30
+    python dynamic_analysis.py trace --apk target.apk --output trace.json --duration 30
 
     # Then use the trace with the main tool:
-    python reachability.py --apk target.apk --findings report.json \
-                           --dynamic trace.json --output report.md
+    python reachability.py --apk target.apk --findings report.json --dynamic trace.json --output report.md
 """
 
 import argparse
@@ -633,17 +630,17 @@ def main():
         epilog="""
 examples:
   # Capture a trace (30 seconds, 2000 monkey events)
-  python dynamic_analysis.py trace --package com.test.app -o trace.json
+  python dynamic_analysis.py trace --apk target.apk -o trace.json
 
   # Then use it with the main tool
-  python reachability.py --apk app.apk --findings report.json --dynamic trace.json
+  python reachability.py --apk target.apk --findings report.json --dynamic trace.json
         """,
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_trace = sub.add_parser("trace", help="Capture a runtime call trace via Frida")
-    p_trace.add_argument("--package", required=True,
-                         help="Target app package name (e.g. com.test.reachability)")
+    p_trace.add_argument("--apk", required=True,
+                         help="Path to the APK file (package name is extracted automatically)")
     p_trace.add_argument("-o", "--output", default="trace.json",
                          help="Output trace file path (default: trace.json)")
     p_trace.add_argument("--duration", type=int, default=30,
@@ -660,8 +657,19 @@ examples:
     DEBUG = getattr(args, "debug", False)
 
     if args.command == "trace":
+        if not os.path.isfile(args.apk):
+            _error_exit(f"APK not found: {args.apk}")
+
+        from androguard.misc import AnalyzeAPK
+        _info(f"Extracting package name from {args.apk}...")
+        apk_obj, _, _ = AnalyzeAPK(args.apk)
+        package = apk_obj.get_package()
+        if not package:
+            _error_exit("Could not extract package name from APK")
+        _info(f"Package: {package}")
+
         capture_trace(
-            package=args.package,
+            package=package,
             duration=args.duration,
             output_path=args.output,
             device=args.device,

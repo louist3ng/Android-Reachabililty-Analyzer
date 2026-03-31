@@ -88,10 +88,10 @@ python reachability.py --apk target.apk --findings mobsf_report.json --output re
 **Step 1 — Capture a runtime trace** (run once per APK, reuse across analyses):
 
 ```
-python dynamic_analysis.py trace --package com.test.reachability --output trace.json --duration 30
+python dynamic_analysis.py trace --apk target.apk --output trace.json --duration 30
 ```
 
-This spawns the app via Frida, hooks all methods in the target package, runs Android's `monkey` tool for automated UI exercising, and records caller/callee pairs.
+The package name is extracted from the APK automatically. The tool then spawns the app via Frida, hooks all methods in the target package, runs Android's `monkey` tool for automated UI exercising, and records caller/callee pairs.
 
 **Step 2 — Run cross-validated analysis** (add `--dynamic` to any static command):
 
@@ -121,7 +121,7 @@ When `--dynamic` is absent, the tool runs pure static analysis — no change to 
 
 | Flag | Default | Description |
 |---|---|---|
-| `--package` | - | Target app package name |
+| `--apk` | - | Path to the APK file (package name extracted automatically) |
 | `--duration` | `30` | Trace duration in seconds |
 | `--monkey-events` | `2000` | Monkey UI events (0 to disable) |
 | `--device` | first available | ADB device serial |
