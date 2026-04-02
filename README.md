@@ -57,6 +57,8 @@ MobSF scans the APK for vulnerabilities. You can either let the tool auto-scan v
 
 ### Frida (optional — enables runtime cross-validation)
 
+> **Experimental:** The dynamic analysis feature is experimental and may not work reliably across all environments, devices, or APKs. It has known limitations with certain emulator configurations and Frida version mismatches.
+
 Adding a Frida runtime trace lets the tool cross-validate static results against actual runtime behaviour, labelling findings as `[VALIDATED]` or `[CONTRADICTION]`.
 
 ```
