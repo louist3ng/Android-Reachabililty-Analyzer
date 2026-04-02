@@ -4,6 +4,8 @@ A proof-of-concept Python CLI tool that determines whether vulnerabilities found
 
 Most scanners flag every pattern match as a finding — but if no execution path connects a user-facing entry point to the vulnerable code, it may not be exploitable. This tool bridges that gap by walking the APK's call graph.
 
+> **⚠️ Disclaimer:** The dynamic analysis feature (`dynamic_analysis.py` and the `--dynamic` flag) is **experimental** and may not work reliably. It depends on Frida, a rooted device or emulator, and specific ADB/Frida version compatibility — any of which can cause failures. Results from dynamic cross-validation may be incomplete or inaccurate and should not be relied upon as a sole source of truth. The static analysis pipeline (`reachability.py` without `--dynamic`) is the stable, primary workflow.
+
 ## How It Works
 
 ```
@@ -55,9 +57,9 @@ MobSF scans the APK for vulnerabilities. You can either let the tool auto-scan v
 - Install and run MobSF: `docker run -p 8000:8000 opensecurity/mobile-security-framework-mobsf`
 - Grab your API key from the MobSF web UI (REST API Key on the home page)
 
-### Frida (optional — enables runtime cross-validation)
+### Frida (optional — enables runtime cross-validation) — ⚠️ EXPERIMENTAL
 
-> **Experimental:** The dynamic analysis feature is experimental and may not work reliably across all environments, devices, or APKs. It has known limitations with certain emulator configurations and Frida version mismatches.
+> **⚠️ Experimental:** The dynamic analysis feature is experimental and may not work reliably. It has known limitations with certain emulator configurations, Frida version mismatches, and specific APK targets. Use at your own risk — results may be incomplete or inaccurate.
 
 Adding a Frida runtime trace lets the tool cross-validate static results against actual runtime behaviour, labelling findings as `[VALIDATED]` or `[CONTRADICTION]`.
 
@@ -85,7 +87,9 @@ python reachability.py --apk target.apk --mobsf-url http://localhost:8000 --mobs
 python reachability.py --apk target.apk --findings mobsf_report.json --output report.md
 ```
 
-### Static + dynamic cross-validation
+### Static + dynamic cross-validation — ⚠️ EXPERIMENTAL
+
+> **⚠️ Experimental:** The dynamic analysis workflow below is experimental and may not work reliably across all environments, devices, or APKs.
 
 **Step 1 — Capture a runtime trace** (run once per APK, reuse across analyses):
 
@@ -117,9 +121,9 @@ When `--dynamic` is absent, the tool runs pure static analysis — no change to 
 | `--mobsf-url` | No | - | MobSF server URL. Enables auto-scan mode (upload, scan, fetch report). |
 | `--mobsf-key` | Conditional | - | MobSF REST API key. Required when `--mobsf-url` is set. |
 | `--save-findings` | No | - | Save the auto-fetched MobSF report JSON to disk for re-use. |
-| `--dynamic` | No | - | Path to a runtime trace JSON (from `dynamic_analysis.py trace`). Enables cross-validation: labels findings as `[VALIDATED]` or `[CONTRADICTION]`. |
+| `--dynamic` | No | - | **(Experimental)** Path to a runtime trace JSON (from `dynamic_analysis.py trace`). Enables cross-validation: labels findings as `[VALIDATED]` or `[CONTRADICTION]`. |
 
-### dynamic_analysis.py trace
+### dynamic_analysis.py trace — ⚠️ EXPERIMENTAL
 
 | Flag | Default | Description |
 |---|---|---|
@@ -149,7 +153,7 @@ Entry Point(s) Checked: 11
 Reason:                No path found within 15 hops from any entry point
 ```
 
-### With `--dynamic trace.json` (cross-validated)
+### With `--dynamic trace.json` (cross-validated) — ⚠️ EXPERIMENTAL
 
 ```markdown
 ## [VALIDATED] SQL Injection in Login Query - Critical
@@ -190,7 +194,7 @@ Analysis Source:   Neither static CFG nor runtime trace found a path
 | **NOT REACHABLE** | No call chain found within the depth limit | Lower priority — may be dead code |
 | **UNRESOLVED** | Finding could not be matched to any call-graph node | Manual review needed |
 
-### With `--dynamic`
+### With `--dynamic` — ⚠️ EXPERIMENTAL
 
 When a runtime trace is provided, reachable findings gain validation labels:
 
@@ -236,14 +240,16 @@ Only the `code_analysis` section is parsed. The `android_api` section (informati
 | File | Description |
 |---|---|
 | `reachability.py` | Main CLI tool (single file, no framework dependencies) |
-| `dynamic_analysis.py` | Optional dynamic analysis module (Frida-based trace capture + cross-validation helpers for `--dynamic` flag) |
+| `dynamic_analysis.py` | **(Experimental)** Optional dynamic analysis module (Frida-based trace capture + cross-validation helpers for `--dynamic` flag) |
 | `INSTRUCTIONS.md` | Detailed usage guide with troubleshooting |
 | `CLAUDE.md` | Guidance for Claude Code when working in this repository |
 | `sample_mobsf_findings.json` | Sample MobSF `code_analysis` findings mapped to the test APK |
 | `samplereport.md` | Sample output report (pre-generated for reference) |
 | `.gitignore` | Excludes APKs, debug logs, generated reports, and session data |
 
-## How Cross-Validation Works
+## How Cross-Validation Works — ⚠️ EXPERIMENTAL
+
+> **Note:** This entire cross-validation workflow is experimental and may produce unreliable results.
 
 When `--dynamic` is provided:
 
