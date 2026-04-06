@@ -74,22 +74,28 @@ def main():
     python = sys.executable
     rows = []
 
-    for i, depth in enumerate(DEPTHS):
+    # Run MobSF scan once (untimed) to fetch and save findings
+    print("Fetching MobSF findings ...", end=" ", flush=True)
+    scan_report = os.path.join(out_dir, "_scan_tmp.md")
+    run_depth(
+        python, apk_path, DEPTHS[0], scan_report,
+        findings_path=None,
+        mobsf_url=args.mobsf_url, mobsf_key=args.mobsf_key,
+        save_findings=findings_path,
+    )
+    if os.path.isfile(scan_report):
+        os.remove(scan_report)
+    print("done")
+
+    # Run each depth using saved findings (timed)
+    for depth in DEPTHS:
         report_path = os.path.join(out_dir, f"depth_{depth}.md")
         print(f"Running depth {depth} ...", end=" ", flush=True)
 
-        if i == 0:
-            elapsed = run_depth(
-                python, apk_path, depth, report_path,
-                findings_path=None,
-                mobsf_url=args.mobsf_url, mobsf_key=args.mobsf_key,
-                save_findings=findings_path,
-            )
-        else:
-            elapsed = run_depth(
-                python, apk_path, depth, report_path,
-                findings_path=findings_path,
-            )
+        elapsed = run_depth(
+            python, apk_path, depth, report_path,
+            findings_path=findings_path,
+        )
 
         counts = parse_verdicts(report_path)
         rows.append((depth, counts, elapsed))
@@ -108,10 +114,9 @@ def main():
                     f"{counts['NOT REACHABLE']} | {counts['UNRESOLVED']} | "
                     f"{elapsed:.1f} |\n")
         f.write(
-            "\n> **Note:** The time for the first depth row includes "
-            "MobSF upload, scan, and findings retrieval overhead. "
-            "Subsequent rows reuse the saved findings and reflect "
-            "only the static analysis time.\n"
+            "\n> **Note:** All times reflect static analysis only. "
+            "MobSF scan overhead is excluded — findings are fetched "
+            "once before benchmarking begins.\n"
         )
 
     print(f"\nSummary written to {summary_path}")
