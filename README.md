@@ -35,7 +35,7 @@ Most scanners flag every pattern match as a finding — but if no execution path
 2. Entry points are extracted from the manifest (Activities, Services, Receivers, Providers)
 3. Each MobSF `code_analysis` finding is matched to a call-graph node using a multi-tier strategy
 4. **Bounded BFS** determines if a path exists from any entry point to each sink
-5. Reachable findings are annotated with false-positive risk flags
+5. Reachable findings are checked for false-positive risk (invalid entry points)
 6. A triaged Markdown report is generated
 
 **Note:** Only the `code_analysis` section of MobSF reports is parsed. The `android_api` and `manifest_analysis` sections are ignored — `android_api` contains informational API usage patterns rather than specific vulnerabilities, and `manifest_analysis` findings are configuration-level issues that don't map to call-graph nodes.
@@ -208,13 +208,9 @@ When a runtime trace is provided, reachable findings gain validation labels:
 
 ## False Positive Risk Flags
 
-Reachable findings may carry annotations to help triage:
+Reachable findings may carry a false-positive risk annotation when the entry point is a **non-exported component with no registered intent filter**. The Android runtime has no mechanism to invoke such a component externally, making the execution path unlikely to be triggerable.
 
-- **Permission gate** — Entry point requires a privileged permission
-- **Not exported** — Entry point only reachable from within the app
-- **Reflection in chain** — Static analysis may not capture the full runtime path
-- **Dead component** — No intent filter and unexported
-- **Third-party library sink** — Vulnerability is in a library, not app code
+This is the only false-positive check the tool performs. It is a deliberate design decision: the tool only flags potential false positives where it has full information — namely the application manifest. Other signals (permission gates, reflection in the call chain, third-party library sinks) are excluded because they represent exploitability constraints or conditions that cannot be evaluated with sufficient confidence by static analysis alone.
 
 ## Sink Matching Strategy
 

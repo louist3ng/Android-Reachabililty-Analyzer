@@ -886,18 +886,20 @@ def run_reachability(cg, entry_points, findings, max_depth):
 # Step 6 - False-positive risk checks (REACHABLE findings only)
 # ---------------------------------------------------------------------------
 
-REFLECTION_SIGS = [
-    "java/lang/reflect/Method;->invoke",
-    "java/lang/reflect/Constructor;->newInstance",
-    "java/lang/Class;->forName",
-    "java/lang/Class;->getMethod",
-    "java/lang/Class;->getDeclaredMethod",
-]
-
 def fp_risk_checks(findings, apk):
-    """Annotate REACHABLE findings with false-positive risk flags."""
-    base_package = apk.get_package()
+    """Annotate REACHABLE findings with false-positive risk flags.
 
+    Only one check is performed: whether the entry point is an invalid
+    invocation target — a non-exported component with no registered intent
+    filter.  The Android runtime has no mechanism to invoke such a component
+    externally, so any reachability path that originates from it is a
+    potential false positive.
+
+    Other signals (permission gates, reflection in the call chain,
+    third-party library sinks) are deliberately excluded.  They represent
+    exploitability constraints or conditions that cannot be evaluated with
+    sufficient confidence by static analysis alone.
+    """
     for f in findings:
         if f["verdict"] != "REACHABLE":
             continue
@@ -905,56 +907,17 @@ def fp_risk_checks(findings, apk):
         fp_flags = []
         ep = f["best_entry"]
 
-        # Check 1 - Permission gate
-        if ep and ep.get("permissions"):
-            perm = ep["permissions"]
-            fp_flags.append(
-                f"Entry point is gated by permission `{perm}` - "
-                "exploitability depends on whether the caller holds this permission"
-            )
-
-        # Check 2 - Non-exported entry point
-        if ep and not ep.get("exported", True):
-            fp_flags.append(
-                "Entry point is not exported - only reachable from within the same application"
-            )
-
-        # Check 3 - Reflection in the call chain
-        if f["path"]:
-            for node_label in f["path"]:
-                if any(sig in node_label for sig in REFLECTION_SIGS):
-                    fp_flags.append(
-                        "Call chain passes through reflection - "
-                        "static analysis may not capture the full runtime path"
-                    )
-                    break
-
-        # Check 4 - Dead component (no intent filter + unexported)
+        # Invalid entry point — non-exported with no intent filter
         if ep and not ep.get("exported", True) and not ep.get("has_intent_filter", False):
             fp_flags.append(
-                "Entry point has no intent filter and is unexported - "
-                "unlikely to be triggered externally"
+                "Entry point is a non-exported component with no registered intent filter - "
+                "the Android runtime has no mechanism to invoke this component externally, "
+                "so this execution path is unlikely to be triggerable"
             )
-
-        # Check 5 - Third-party library sink
-        if f["matched_label"] and base_package:
-            sink_pkg = _label_to_package(f["matched_label"])
-            base_pkg_slash = base_package.replace(".", "/")
-            if sink_pkg and base_pkg_slash not in sink_pkg:
-                fp_flags.append(
-                    f"Sink resides in a third-party library `{sink_pkg.replace('/', '.')}` - "
-                    "confirm whether this vulnerability applies to this version"
-                )
 
         f["fp_flags"] = fp_flags
 
     return findings
-
-
-def _label_to_package(label):
-    """Extract 'com/example/sub' from 'Lcom/example/sub/Class;->method(...)...'."""
-    m = re.match(r"L([\w/]+)/\w+;", label)
-    return m.group(1) if m else ""
 
 # ---------------------------------------------------------------------------
 # Step 7 - Generate the Markdown report

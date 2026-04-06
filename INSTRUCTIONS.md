@@ -26,7 +26,7 @@ The analysis pipeline operates in a linear sequence:
 2. The vulnerability findings are obtained either by **auto-scanning via the MobSF REST API** or by loading a pre-exported **MobSF** findings file. In either case, the findings are parsed into a normalised list of vulnerability sinks, each mapped to a class and method name.
 3. Each sink is matched against nodes in the call graph using a multi-tier matching strategy (exact signature, class+method, class-only, method-only).
 4. **NetworkX** performs bounded BFS traversal from each Android entry point (exported Activities, Services, Receivers, Providers) toward each matched sink node.
-5. The results are enriched with false-positive risk annotations derived from manifest properties (export status, permissions, intent filters) and call-chain characteristics (reflection usage, third-party library origin).
+5. Reachable findings are checked for false-positive risk — specifically, whether the entry point is a non-exported component with no registered intent filter (i.e. the Android runtime cannot invoke it externally). This is the only FP check performed; other signals are excluded as they cannot be evaluated with sufficient confidence by static analysis alone.
 6. A structured Markdown report is generated, triaging all findings into REACHABLE, NOT REACHABLE, and UNRESOLVED categories.
 
 The tool is implemented as a single Python CLI script (`reachability.py`) with no external framework dependencies beyond Androguard and NetworkX. The MobSF API integration uses only Python's standard library (`urllib`), so no additional packages are required for auto-scan mode.
@@ -356,16 +356,12 @@ Match Confidence:  No match
 
 ## Understanding FP Risk Flags
 
-Reachable findings may carry false-positive risk annotations. These do **not** change
-the verdict - they flag things for the analyst to verify:
+Reachable findings may carry a false-positive risk annotation. This does **not** change
+the verdict — it flags the finding for the analyst to verify.
 
-| Flag | What It Means |
-|---|---|
-| **Permission gate** | The entry point requires a privileged permission (e.g., `INSTALL_PACKAGES`). An attacker would need to hold this permission to trigger the chain. |
-| **Not exported** | The entry point has `android:exported="false"`. Only the app itself (or apps with the same UID) can reach it. |
-| **Reflection in chain** | The call path passes through `Method.invoke()`, `Class.forName()`, etc. The actual runtime path may differ from what static analysis shows. |
-| **Dead component** | The entry point has no intent filter and is not exported. It is unlikely to be triggered externally. |
-| **Third-party library sink** | The vulnerable method is in a library package, not the app's own code. Confirm the library version is actually affected. |
+The tool performs a single FP check: whether the entry point is a **non-exported component with no registered intent filter**. The Android runtime has no mechanism to invoke such a component externally, so any execution path originating from it is unlikely to be triggerable.
+
+This is a deliberate design decision. The tool only flags potential false positives where it has full information — namely the application manifest. Other signals (permission gates, reflection in the call chain, third-party library sinks) are excluded because they represent exploitability constraints or conditions that cannot be evaluated with sufficient confidence by static analysis alone.
 
 ---
 
