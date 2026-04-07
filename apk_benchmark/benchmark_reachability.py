@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 
-DEPTHS = [5, 10, 15, 20, 25, 30]
+DEPTHS = [5, 10, 15, 20, 25, 30, 35, 40]
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REACHABILITY_PY = os.path.join(REPO_ROOT, "reachability.py")
@@ -57,8 +57,7 @@ def run_depth(python, apk, depth, output_path, findings_path,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Benchmark reachability.py across BFS depths "
-                    f"{DEPTHS[0]}-{DEPTHS[-1]}.")
+        description=f"Benchmark reachability.py across BFS depths {DEPTHS[0]}-{DEPTHS[-1]}.")
     parser.add_argument("--apk", required=True, help="Path to the APK file")
     parser.add_argument("--mobsf-url", required=True,
                         help="MobSF server URL (e.g. http://localhost:8000)")
