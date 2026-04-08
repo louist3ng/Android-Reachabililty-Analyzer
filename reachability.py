@@ -269,21 +269,30 @@ def _build_node_index(cg):
     Build a single, reusable index of call-graph nodes.
 
     Returns three structures:
-      node_by_norm   : { normalised_label : node_object }
+      node_by_norm    : { normalised_label : node_object }
+                        (one representative per label — used for iteration)
       node_obj_to_norm: { id(node_object) : normalised_label }
-      norm_to_node_obj: same as node_by_norm (alias for readability)
+      nodes_by_norm   : { normalised_label : [node_obj, ...] }
+                        (ALL objects per label — used for multi-target BFS
+                        and unbounded path checks to avoid node-identity bugs)
 
     Using id() as the dict key avoids reliance on __eq__/__hash__.
     """
-    node_by_norm = {}       # normalised str -> node object
+    node_by_norm = {}       # normalised str -> one node object (last wins)
     node_obj_to_norm = {}   # id(node) -> normalised str
+    nodes_by_norm = {}      # normalised str -> list of ALL node objects
 
     for n in cg.nodes():
         norm = _normalise_node_label(str(n))
         node_by_norm[norm] = n
         node_obj_to_norm[id(n)] = norm
+        nodes_by_norm.setdefault(norm, []).append(n)
 
-    return node_by_norm, node_obj_to_norm
+    dupes = sum(1 for v in nodes_by_norm.values() if len(v) > 1)
+    if dupes:
+        debug(f"Node index: {dupes} normalised labels map to multiple graph objects (multi-target BFS will cover all)")
+
+    return node_by_norm, node_obj_to_norm, nodes_by_norm
 
 # ---------------------------------------------------------------------------
 # Synthetic callback edge injection
@@ -790,15 +799,22 @@ def bfs_reachability(cg, source_node, target_node, max_depth):
     Bounded BFS from source_node toward target_node.
     Returns the path as a list of normalised node labels if reachable
     within max_depth hops, or None if not reachable.
-    """
-    target_id = id(target_node)
 
-    if id(source_node) == target_id:
-        return [_normalise_node_label(str(source_node))]
+    Target matching uses normalised labels (not object identity) so that
+    the BFS finds the sink regardless of which Python object instance
+    represents it in the graph.  The visited set still uses id() to
+    correctly handle multiple graph objects with the same label — each
+    instance may carry different edges, so all must be explored.
+    """
+    target_label = _normalise_node_label(str(target_node))
+    source_label = _normalise_node_label(str(source_node))
+
+    if source_label == target_label:
+        return [source_label]
 
     visited = {id(source_node)}
     # Queue entries: (current_node, path_so_far, current_depth)
-    queue = deque([(source_node, [_normalise_node_label(str(source_node))], 0)])
+    queue = deque([(source_node, [source_label], 0)])
 
     while queue:
         current, path, depth = queue.popleft()
@@ -812,30 +828,42 @@ def bfs_reachability(cg, source_node, target_node, max_depth):
             visited.add(nid)
             neighbor_label = _normalise_node_label(str(neighbor))
             new_path = path + [neighbor_label]
-            if nid == target_id:
+            if neighbor_label == target_label:
                 return new_path
             queue.append((neighbor, new_path, depth + 1))
 
     return None
 
 
-def _check_unbounded_path(cg, source_node, target_node):
+def _check_unbounded_path(cg, source_node, target_nodes):
     """
     Quick check using NetworkX's has_path (no depth limit).
-    Returns True if ANY path exists in the directed graph, regardless of length.
-    Used for diagnostics only — helps distinguish 'genuinely unreachable' from
-    'reachable but deeper than max_depth'.
+    Returns True if ANY path exists in the directed graph to ANY of the
+    target_nodes, regardless of length.  Accepts a list of target nodes
+    to handle the case where the same normalised label maps to multiple
+    graph objects (only some of which may have incoming edges).
+
+    Used for diagnostics only — helps distinguish 'genuinely unreachable'
+    from 'reachable but deeper than max_depth'.
     """
-    try:
-        return nx.has_path(cg, source_node, target_node)
-    except (nx.NodeNotFound, nx.NetworkXError):
-        return False
+    for target_node in target_nodes:
+        try:
+            if nx.has_path(cg, source_node, target_node):
+                return True
+        except (nx.NodeNotFound, nx.NetworkXError):
+            continue
+    return False
 
 
-def run_reachability(cg, entry_points, findings, max_depth):
+def run_reachability(cg, entry_points, findings, max_depth, nodes_by_norm=None):
     """
     For each finding with a matched sink node, run BFS from every entry point.
     Store the shortest reachable path (fewest hops) or mark NOT REACHABLE / UNRESOLVED.
+
+    nodes_by_norm is the {normalised_label: [node, ...]} dict from
+    _build_node_index().  When provided, unbounded-path diagnostics check
+    ALL graph objects for the target label (not just the one stored in
+    matched_node), avoiding false negatives from node-identity mismatches.
     """
     for f in findings:
         if f["matched_node"] is None:
@@ -866,8 +894,11 @@ def run_reachability(cg, entry_points, findings, max_depth):
         else:
             # Diagnostic: check if a path exists beyond our depth limit.
             # This tells the user whether increasing --max-depth would help.
+            # Use ALL node objects for this label to avoid id()-based misses.
+            target_label = f["matched_label"]
+            target_nodes = (nodes_by_norm or {}).get(target_label, [f["matched_node"]])
             for ep in entry_points:
-                if _check_unbounded_path(cg, ep["node"], f["matched_node"]):
+                if _check_unbounded_path(cg, ep["node"], target_nodes):
                     unbounded_reachable = True
                     debug(f"  '{f['title']}' IS reachable from '{ep['component_name']}' beyond depth {max_depth}")
                     break
@@ -1150,7 +1181,7 @@ def main():
     apk, dalvik, analysis, cg = build_call_graph(args.apk)
 
     # Build the normalised node index ONCE and share it across all stages
-    node_by_norm, node_obj_to_norm = _build_node_index(cg)
+    node_by_norm, node_obj_to_norm, nodes_by_norm = _build_node_index(cg)
     debug(f"Node index built: {len(node_by_norm)} unique normalised labels from {cg.number_of_nodes()} raw nodes")
 
     # Inject synthetic callback edges for lambdas and anonymous inner classes
@@ -1187,7 +1218,7 @@ def main():
 
     # Step 5 - BFS reachability
     info(f"Running reachability analysis (max depth = {args.max_depth})...")
-    findings = run_reachability(cg, entry_points, findings, args.max_depth)
+    findings = run_reachability(cg, entry_points, findings, args.max_depth, nodes_by_norm)
 
     # Step 6 - FP risk checks
     findings = fp_risk_checks(findings, apk)
