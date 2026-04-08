@@ -339,20 +339,22 @@ CALLBACK_METHODS = [
 
 def _inject_callback_edges(cg, node_by_norm):
     """
-    For every edge  A -> SyntheticClass.<init>,  add synthetic edges
-    A -> SyntheticClass.callbackMethod  for each callback method found
+    For every edge  A -> SomeClass.<init>,  add synthetic edges
+    A -> SomeClass.callbackMethod  for each callback method found
     in the call graph.
 
     Targets:
-      - $$ExternalSyntheticLambda  (D8/R8 desugared lambdas)
+      - $$ExternalSyntheticLambda  (D8/R8 desugared lambdas, non-obfuscated)
       - $N  anonymous inner classes (e.g. NetworkActivity$1)
+      - Any obfuscated short-named class (e.g. LP/a, LP/b) that implements
+        a callback interface — obfuscation renames the class but the interface
+        method names (onClick, run, etc.) are preserved.
     """
     # Pre-index: class_prefix -> list of (norm_label, node) for callback methods
+    # Covers ALL classes that have a known callback method — not just $-named ones,
+    # so that obfuscated lambda classes (e.g. LP/a) are also bridged.
     callback_index = {}   # "Lcom/test/Foo$1;" -> [(norm, node), ...]
     for norm, node in node_by_norm.items():
-        # Only care about inner / synthetic classes
-        if "$$" not in norm and "$" not in norm:
-            continue
         for cb in CALLBACK_METHODS:
             if f"->{cb}(" in norm:
                 # Extract the class part  "Lcom/test/Foo$1;"
