@@ -716,17 +716,319 @@ def _path_to_class(path):
 CONFIDENCE_LEVELS = [
     "Exact signature",
     "Exact class + method",
+    "Line number resolved",
+    "Rule-specific bytecode match",
     "Exact class only",
     "Exact method only",
     "No match",
 ]
 
-def match_sinks(findings, cg, node_by_norm):
+# ---------------------------------------------------------------------------
+# Enhanced sink resolution: line-number mapping & rule-specific bytecode scan
+#
+# These two helpers are tried (in order) BEFORE the old "Exact class only"
+# fallback, dramatically improving accuracy for real MobSF findings that
+# only provide a file path + line numbers.
+# ---------------------------------------------------------------------------
+
+def _read_uleb128(stream):
+    """Read an unsigned LEB128 value from a byte stream."""
+    result = 0; shift = 0
+    while True:
+        b = stream.read(1)
+        if not b:
+            break
+        b = b[0]
+        result |= (b & 0x7f) << shift
+        if (b & 0x80) == 0:
+            break
+        shift += 7
+    return result
+
+
+def _read_sleb128(stream):
+    """Read a signed LEB128 value from a byte stream."""
+    result = 0; shift = 0
+    while True:
+        b = stream.read(1)[0]
+        result |= (b & 0x7f) << shift
+        shift += 7
+        if (b & 0x80) == 0:
+            if b & 0x40:
+                result -= (1 << shift)
+            break
+    return result
+
+
+def _parse_debug_lines(dex_raw, debug_info_off):
+    """
+    Parse the DEX debug_info_item at the given offset and return
+    the set of all source line numbers covered by this method.
+
+    Implements the DEX debug state machine:
+      https://source.android.com/docs/core/runtime/dex-format#debug-info-item
+    """
+    import io
+
+    if debug_info_off == 0 or debug_info_off >= len(dex_raw):
+        return set()
+
+    stream = io.BytesIO(dex_raw)
+    stream.seek(debug_info_off)
+
+    line_start = _read_uleb128(stream)
+    params_size = _read_uleb128(stream)
+    # Skip parameter name indices (uleb128p1 each)
+    for _ in range(params_size):
+        _read_uleb128(stream)
+
+    lines = set()
+    cur_line = line_start
+    if cur_line > 0:
+        lines.add(cur_line)
+
+    while True:
+        b = stream.read(1)
+        if not b:
+            break
+        op = b[0]
+        if op == 0x00:    # DBG_END_SEQUENCE
+            break
+        elif op == 0x01:  # DBG_ADVANCE_PC
+            _read_uleb128(stream)
+        elif op == 0x02:  # DBG_ADVANCE_LINE
+            cur_line += _read_sleb128(stream)
+            lines.add(cur_line)
+        elif op == 0x03:  # DBG_START_LOCAL
+            _read_uleb128(stream); _read_uleb128(stream); _read_uleb128(stream)
+        elif op == 0x04:  # DBG_START_LOCAL_EXTENDED
+            _read_uleb128(stream); _read_uleb128(stream)
+            _read_uleb128(stream); _read_uleb128(stream)
+        elif op == 0x05:  # DBG_END_LOCAL
+            _read_uleb128(stream)
+        elif op == 0x06:  # DBG_RESTART_LOCAL
+            _read_uleb128(stream)
+        elif op in (0x07, 0x08):  # SET_PROLOGUE_END / SET_EPILOGUE_BEGIN
+            pass
+        elif op == 0x09:  # DBG_SET_FILE
+            _read_uleb128(stream)
+        else:             # Special opcode (0x0a - 0xff)
+            adjusted = op - 0x0a
+            cur_line += (adjusted % 15) - 4    # DBG_LINE_BASE=-4, LINE_RANGE=15
+            lines.add(cur_line)
+
+    return lines
+
+
+def _get_dex_raw_for_method(dalvik_list, dalvik_cls):
+    """
+    Find the DEX object that contains *dalvik_cls* and return its raw bytes.
+    Returns (dex_raw_bytes, class_def) or (None, None).
+    """
+    for dex in dalvik_list:
+        for cls in dex.get_classes():
+            if cls.get_name() == dalvik_cls:
+                raw = getattr(dex, "raw", None)
+                if raw is None:
+                    return None, None
+                # Androguard 4.x: dex.raw may be a BufferedReader
+                if hasattr(raw, "read"):
+                    pos = raw.tell()
+                    raw.seek(0)
+                    raw = raw.read()
+                    # Restore position
+                elif not isinstance(raw, (bytes, bytearray)):
+                    return None, None
+                return raw, cls
+    return None, None
+
+
+def _resolve_method_by_line(analysis, dalvik_cls, line_numbers_str,
+                            dalvik_list=None):
+    """
+    Map MobSF-reported line numbers to the exact method that contains them.
+    Uses manual DEX debug-info parsing (Androguard 4.x get_debug() is broken).
+    Returns the method name (e.g. 'logCredentials') or None.
+    """
+    if not line_numbers_str or not dalvik_cls or not dalvik_list:
+        return None
+
+    try:
+        target_lines = {int(x.strip()) for x in line_numbers_str.split(",")
+                        if x.strip().isdigit()}
+    except (ValueError, AttributeError):
+        return None
+    if not target_lines:
+        return None
+
+    try:
+        dex_raw, cls_def = _get_dex_raw_for_method(dalvik_list, dalvik_cls)
+        if dex_raw is None or cls_def is None:
+            return None
+
+        for method in cls_def.get_methods():
+            code = method.get_code()
+            if code is None:
+                continue
+            off = code.get_debug_info_off()
+            method_lines = _parse_debug_lines(dex_raw, off)
+
+            if method_lines and target_lines & method_lines:
+                mname = method.get_name()
+                debug(f"  Line-number resolution: lines {line_numbers_str} "
+                      f"matched method '{mname}' (lines {sorted(method_lines)[:10]})")
+                return mname
+    except Exception:
+        pass
+
+    return None
+
+
+# Map MobSF rule_id -> bytecode patterns to search for.
+# Each entry is a list of (match_type, pattern) tuples.
+#   "invoke"  — substring match on invoke-* instruction operands
+#   "string"  — regex/substring match on const-string operands
+# When BOTH invoke AND string patterns are present, ALL must match (AND logic)
+# within a single method.  Within the same match_type, ANY match suffices (OR).
+RULE_SIGNATURES = {
+    "android_hardcoded": [
+        # In bytecode, const-string holds the raw value or strings that embed
+        # credentials; also match sput/sget on fields named like secrets.
+        ("string", re.compile(
+            r"(?i)(password|passwd|secret|api.?key|apikey|token|credential"
+            r"|PASSWORD|DB_PASSWORD|API_KEY|SECRET_KEY)")),
+    ],
+    "android_ip_disclosure": [
+        # IP address literal in a const-string
+        ("string", re.compile(
+            r"(?<![.\d])(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)\.){3}"
+            r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]\d|\d)(?![.\d])")),
+    ],
+    "android_logging": [
+        ("invoke", "Landroid/util/Log;->"),
+    ],
+    "android_sql_raw_query": [
+        ("invoke", "rawQuery("),
+        ("invoke", "execSQL("),
+    ],
+    "android_insecure_random": [
+        ("invoke", "Ljava/util/Random;-><init>"),
+    ],
+    "android_insecure_ssl": [
+        ("invoke", "setDefaultHostnameVerifier("),
+    ],
+    "android_aes_ecb": [
+        ("invoke", "Ljavax/crypto/Cipher;->getInstance"),
+        ("string", re.compile(r"AES/ECB")),
+    ],
+    "android_weak_ciphers": [
+        ("invoke", "Ljavax/crypto/Cipher;->getInstance"),
+        ("string", re.compile(r"(?i)\b(DES|RC[24]|Blowfish)\b")),
+    ],
+    "android_md5": [
+        ("invoke", "Ljava/security/MessageDigest;->getInstance"),
+        ("string", re.compile(r"\bMD5\b")),
+    ],
+    "android_sha1": [
+        ("invoke", "Ljava/security/MessageDigest;->getInstance"),
+        ("string", re.compile(r"\bSHA-?1\b")),
+    ],
+    "android_world_readable": [
+        ("string", re.compile(r"MODE_WORLD_READABLE")),
+    ],
+    "android_world_writable": [
+        ("string", re.compile(r"MODE_WORLD_WRITABLE")),
+    ],
+    "android_read_write_external": [
+        ("invoke", "getExternalStorage"),
+        ("invoke", "getExternalFilesDir("),
+    ],
+}
+
+
+def _resolve_method_by_rule(analysis, dalvik_cls, rule_id):
+    """
+    Scan methods in *dalvik_cls* for bytecode patterns specific to the
+    given MobSF *rule_id*.  Returns the method name or None.
+    """
+    signatures = RULE_SIGNATURES.get(rule_id)
+    if not signatures or not dalvik_cls:
+        return None
+
+    try:
+        class_analysis = analysis.get_class_analysis(dalvik_cls)
+        if class_analysis is None:
+            return None
+
+        invoke_sigs = [s for s in signatures if s[0] == "invoke"]
+        string_sigs = [s for s in signatures if s[0] in ("string", "const")]
+
+        for method_analysis in class_analysis.get_methods():
+            method = method_analysis.get_method()
+            if not hasattr(method, "get_code"):
+                continue
+            code = method.get_code()
+            if code is None:
+                continue
+
+            method_strings = set()
+            method_invokes = set()
+
+            try:
+                for instruction in code.get_bc().get_instructions():
+                    op_name = instruction.get_name()
+                    op_output = instruction.get_output()
+                    if "const-string" in op_name:
+                        method_strings.add(op_output)
+                    elif "invoke" in op_name:
+                        method_invokes.add(op_output)
+            except Exception:
+                continue
+
+            # AND logic: both invoke and string groups must match
+            invoke_ok = not invoke_sigs  # vacuously true if no invoke sigs
+            string_ok = not string_sigs
+
+            if not invoke_ok:
+                for _, pattern in invoke_sigs:
+                    for inv in method_invokes:
+                        if pattern in inv:
+                            invoke_ok = True
+                            break
+                    if invoke_ok:
+                        break
+
+            if not string_ok:
+                for _, pattern in string_sigs:
+                    for s in method_strings:
+                        if isinstance(pattern, re.Pattern):
+                            if pattern.search(s):
+                                string_ok = True
+                                break
+                        elif pattern in s:
+                            string_ok = True
+                            break
+                    if string_ok:
+                        break
+
+            if invoke_ok and string_ok:
+                mname = method.get_name()
+                debug(f"  Rule-based resolution: rule '{rule_id}' "
+                      f"matched method '{mname}' in {dalvik_cls}")
+                return mname
+    except Exception:
+        pass
+
+    return None
+
+def match_sinks(findings, cg, node_by_norm, analysis=None, dalvik_list=None):
     """
     For each finding, try to match it to a node in the call graph.
     Matching strategy (applied in order, first match wins):
       1. Exact Dalvik signature
       2. Exact class + exact method name
+      2a. Line-number resolved method
+      2b. Rule-specific bytecode match
       3. Exact class name only (first node in that class)
       4. Exact method name only (first node with that method name)
       5. No match -> UNRESOLVED
@@ -754,6 +1056,29 @@ def match_sinks(findings, cg, node_by_norm):
                     matched_label = norm_label
                     confidence = "Exact class + method"
                     break
+
+        # 2a) Line-number -> method resolution (MobSF FORMAT A provides line numbers)
+        if not matched_node and dalvik_cls and analysis and f.get("line_numbers"):
+            resolved = _resolve_method_by_line(analysis, dalvik_cls, f["line_numbers"],
+                                               dalvik_list=dalvik_list)
+            if resolved:
+                for norm_label, node in node_by_norm.items():
+                    if dalvik_cls in norm_label and f"->{resolved}(" in norm_label:
+                        matched_node = node
+                        matched_label = norm_label
+                        confidence = "Line number resolved"
+                        break
+
+        # 2b) Rule-specific bytecode pattern matching
+        if not matched_node and dalvik_cls and analysis and f.get("source_file"):
+            resolved = _resolve_method_by_rule(analysis, dalvik_cls, f["source_file"])
+            if resolved:
+                for norm_label, node in node_by_norm.items():
+                    if dalvik_cls in norm_label and f"->{resolved}(" in norm_label:
+                        matched_node = node
+                        matched_label = norm_label
+                        confidence = "Rule-specific bytecode match"
+                        break
 
         # 3) Exact class only
         if not matched_node and dalvik_cls:
@@ -1211,7 +1536,7 @@ def main():
         # Loaded from file
         findings, source = parse_findings(args.findings, "mobsf")
     info(f"Parsed {len(findings)} findings from {source}")
-    findings = match_sinks(findings, cg, node_by_norm)
+    findings = match_sinks(findings, cg, node_by_norm, analysis, dalvik_list=dalvik)
 
     matched_count = sum(1 for f in findings if f["matched_node"] is not None)
     info(f"Sink matching: {matched_count}/{len(findings)} findings matched to call graph nodes")

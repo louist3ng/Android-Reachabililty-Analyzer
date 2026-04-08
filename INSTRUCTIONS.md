@@ -24,7 +24,7 @@ The analysis pipeline operates in a linear sequence:
 
 1. **Androguard** parses the APK and produces a directed call graph (via NetworkX) along with parsed manifest metadata.
 2. The vulnerability findings are obtained either by **auto-scanning via the MobSF REST API** or by loading a pre-exported **MobSF** findings file. In either case, the findings are parsed into a normalised list of vulnerability sinks, each mapped to a class and method name.
-3. Each sink is matched against nodes in the call graph using a multi-tier matching strategy (exact signature, class+method, class-only, method-only).
+3. Each sink is matched against nodes in the call graph using a 7-tier matching strategy (exact signature, class+method, line-number resolved, rule-specific bytecode match, class-only, method-only, unresolved).
 4. **NetworkX** performs bounded BFS traversal from each Android entry point (exported Activities, Services, Receivers, Providers) toward each matched sink node.
 5. Reachable findings are checked for false-positive risk — specifically, whether the entry point is a non-exported component with no registered intent filter (i.e. the Android runtime cannot invoke it externally). This is the only FP check performed; other signals are excluded as they cannot be evaluated with sufficient confidence by static analysis alone.
 6. A structured Markdown report is generated, triaging all findings into REACHABLE, NOT REACHABLE, and UNRESOLVED categories.
@@ -373,9 +373,11 @@ The tool tries to match each finding to a call-graph node using progressively lo
 |---|---|---|
 | 1. Exact signature | Full Dalvik method signature | Highest |
 | 2. Exact class + method | Class name and method name both matched | High |
-| 3. Exact class only | Class matched but specific method wasn't found | Medium |
-| 4. Exact method only | Method name matched in a different class | Low |
-| 5. No match | Finding becomes UNRESOLVED | - |
+| 3. Line number resolved | MobSF's reported line numbers mapped to the specific method via DEX debug info parsing | High |
+| 4. Rule-specific bytecode match | Method bytecode contains API calls or string constants specific to the MobSF rule (e.g., `Log.d` for logging, `rawQuery` for SQL injection, hardcoded credential patterns) | Medium-High |
+| 5. Exact class only | Class matched but specific method wasn't found | Medium |
+| 6. Exact method only | Method name matched in a different class | Low |
+| 7. No match | Finding becomes UNRESOLVED | - |
 
 ---
 

@@ -218,9 +218,13 @@ Findings are matched to call-graph nodes using progressively looser strategies:
 
 1. **Exact Dalvik signature** — highest confidence
 2. **Exact class + method name**
-3. **Exact class only**
-4. **Exact method only** — lowest confidence
-5. **No match** — finding becomes UNRESOLVED
+3. **Line number resolved** — uses MobSF's reported line numbers mapped to the specific method via DEX debug info parsing
+4. **Rule-specific bytecode match** — scans method bytecode for API calls/string constants specific to the MobSF rule (e.g., `Log.d` for `android_logging`, `rawQuery` for `android_sql_raw_query`, hardcoded credential patterns for `android_hardcoded`)
+5. **Exact class only**
+6. **Exact method only** — lowest confidence
+7. **No match** — finding becomes UNRESOLVED
+
+Tiers 3 and 4 dramatically improve accuracy over the old "Exact class only" fallback, which often matched the wrong node (e.g., a lambda constructor instead of the actual vulnerable method). Supported rule-specific patterns: `android_hardcoded`, `android_logging`, `android_sql_raw_query`, `android_insecure_ssl`, `android_insecure_random`, `android_aes_ecb`, `android_weak_ciphers`, `android_md5`, `android_sha1`, `android_world_readable`, `android_world_writable`, `android_read_write_external`, `android_ip_disclosure`.
 
 ## Supported Findings
 
