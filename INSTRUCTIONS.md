@@ -48,6 +48,7 @@ or **UNRESOLVED**, and flags false-positive risks where relevant.
 | File | Description |
 |---|---|
 | `reachability.py` | The main CLI tool |
+| `entry_point_counter/` | Standalone utility — counts activities, services, and receivers via MobSF API, outputs CSV |
 | `sample_mobsf_findings.json` | Sample MobSF findings mapped to the test APK |
 | `report.md` | Sample output report (pre-generated for reference) |
 | `INSTRUCTIONS.md` | This file |

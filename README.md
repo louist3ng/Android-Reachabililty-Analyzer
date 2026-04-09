@@ -241,6 +241,7 @@ Only the `code_analysis` section is parsed. The `android_api` section (informati
 |---|---|
 | `reachability.py` | Main CLI tool (single file, no framework dependencies) |
 | `dynamic_analysis.py` | **(Experimental)** Optional dynamic analysis module (Frida-based trace capture + cross-validation helpers for `--dynamic` flag) |
+| `entry_point_counter/` | Standalone utility that counts activities, services, and receivers via MobSF API and writes results to CSV |
 | `INSTRUCTIONS.md` | Detailed usage guide with troubleshooting |
 | `CLAUDE.md` | Guidance for Claude Code when working in this repository |
 | `sample_mobsf_findings.json` | Sample MobSF `code_analysis` findings mapped to the test APK |
